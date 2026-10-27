@@ -78,7 +78,6 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
   const validateForm = (): boolean => {
     setValidationError(null);
 
-    // 1. Team Name Validation
     const cleanTeam = teamName.trim();
     if (!cleanTeam) {
       setValidationError('Team Name is required.');
@@ -102,13 +101,11 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
       return false;
     }
 
-    // 2. Region Validation
     if (!region || !isValidTournamentRegion(region)) {
       setValidationError('Please select a valid Region (India, Bangladesh, or Pakistan).');
       return false;
     }
 
-    // 3. WhatsApp Number Validation (Single required field with region country code)
     const cleanWa1 = whatsappNumber1.trim();
     const expectedCode = getRegionCountryCode(region);
     if (!cleanWa1 || cleanWa1 === expectedCode) {
@@ -120,14 +117,12 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
       return false;
     }
 
-    // 4. Roster Validation (Strictly reqTags players as set during setup)
     const filledPlayers = playerTags.map(p => p.trim()).filter(Boolean);
     if (filledPlayers.length !== reqTags) {
       setValidationError(`Exactly ${reqTags} players are required as configured in tournament setup (no extra or missing players).`);
       return false;
     }
 
-    // Self-duplication check
     const lowerPlayers = filledPlayers.map(p => p.toLowerCase().replace(/^@/, ''));
     const uniquePlayers = new Set(lowerPlayers);
     if (uniquePlayers.size !== lowerPlayers.length) {
@@ -135,7 +130,6 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
       return false;
     }
 
-    // Cross-team duplicate player check
     if (config.prohibitDuplicateTags) {
       for (const p of filledPlayers) {
         const pLower = p.toLowerCase().replace(/^@/, '');
@@ -216,7 +210,6 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/80 backdrop-blur-xs overflow-y-auto">
       <div className="bg-[#14171D] border border-[#292F3A] rounded-2xl w-full max-w-xl overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-200 my-auto">
-        {/* Header */}
         <div className="px-5 sm:px-6 py-4 border-b border-[#292F3A] flex items-center justify-between bg-[#101217]">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-[#191D25] border border-[#292F3A] flex items-center justify-center text-[#6685FF]">
@@ -242,7 +235,6 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
           </button>
         </div>
 
-        {/* Content & Form */}
         <form onSubmit={handleSubmit} className="p-5 sm:p-6 space-y-4 text-xs">
           {validationError && (
             <div className="p-3 rounded-lg bg-[#FF626C]/10 border border-[#FF626C]/30 text-[#FF626C] flex items-start gap-2.5">
@@ -262,7 +254,6 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
             </div>
           )}
 
-          {/* Team Name */}
           <div>
             <label className="block text-xs font-medium text-[#F3F5F9] mb-1.5">
               Team Name: <span className="text-[#FF626C]">*</span>
@@ -278,7 +269,6 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
             />
           </div>
 
-          {/* Region Dropdown */}
           <div>
             <label className="block text-xs font-medium text-[#F3F5F9] mb-1.5 flex items-center justify-between">
               <span className="flex items-center gap-1.5">
@@ -305,7 +295,6 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
             </select>
           </div>
 
-          {/* Single WhatsApp Number */}
           <div>
             <label className="block text-xs font-medium text-[#F3F5F9] mb-1.5 flex items-center gap-1">
               <Phone className="w-3 h-3 text-[#31D69A]" />
@@ -326,13 +315,11 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
             </p>
           </div>
 
-          {/* Privacy Note */}
           <div className="p-2.5 rounded-md bg-[#191D25] border border-[#292F3A] flex items-center gap-2 text-[11px] text-[#929BAA]">
             <Info className="w-3.5 h-3.5 text-[#6685FF] shrink-0" />
             <span>Contact number remains confidential to tournament staff. Upon submit, all {reqTags} tagged players receive the Team Voice Channel Role to join VC.</span>
           </div>
 
-          {/* Players Tags (Strictly reqTags as set during setup) */}
           <div className="space-y-2.5 pt-2 border-t border-[#292F3A]">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-[#F3F5F9]">
@@ -363,7 +350,6 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
             </div>
           </div>
 
-          {/* Footer Buttons */}
           <div className="pt-4 border-t border-[#292F3A] flex items-center justify-end gap-2.5">
             <button
               type="button"

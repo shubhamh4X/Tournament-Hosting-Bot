@@ -305,7 +305,6 @@ class DiscordBotManager {
       .setCustomId('submit_team_reg_modal')
       .setTitle(`🏆 Register Your Team (${tags} Players)`.slice(0, 45));
 
-    // 1st Field: Team Name
     const teamNameLabel = new LabelBuilder()
       .setLabel('1. Team Name:')
       .setDescription('Enter your unique squad name')
@@ -319,7 +318,6 @@ class DiscordBotManager {
           .setRequired(true)
       );
 
-    // 2nd Field: Region Selection (Dropdown inside Modal)
     const regionSelect = new StringSelectMenuBuilder()
       .setCustomId('reg_region')
       .setPlaceholder('Select Region (India, Bangladesh, Pakistan)')
@@ -352,7 +350,6 @@ class DiscordBotManager {
       .setDescription('Select your team region (India, Bangladesh, Pakistan)')
       .setStringSelectMenuComponent(regionSelect);
 
-    // 3rd Field: WhatsApp Number
     const whatsappLabel = new LabelBuilder()
       .setLabel('3. WhatsApp Number:')
       .setDescription('Country code (+91 / +880 / +92) is auto-applied from Region')
@@ -366,7 +363,6 @@ class DiscordBotManager {
           .setRequired(true)
       );
 
-    // 4th Field: Players Tags Selection (User Select Menu — strictly limited to requiredTags)
     const playersSelect = new UserSelectMenuBuilder()
       .setCustomId('reg_player_tags')
       .setPlaceholder(`Select exactly ${tags} player${tags > 1 ? 's' : ''} (Required: ${tags})`.slice(0, 150))
@@ -658,7 +654,6 @@ class DiscordBotManager {
     const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
     const targetRoleName = (config?.managerRoleName || 'FFA Bot Manager').trim().toLowerCase();
 
-    // Check GuildMember role collection
     if (member.roles?.cache) {
       const hasRole = member.roles.cache.some(
         (r: any) =>
@@ -668,7 +663,6 @@ class DiscordBotManager {
       if (hasRole) return true;
     }
 
-    // Check APIInteractionGuildMember role IDs array
     if (Array.isArray(member.roles) && guild) {
       const managerRole = guild.roles.cache.find(
         r =>
@@ -680,7 +674,6 @@ class DiscordBotManager {
       }
     }
 
-    // When running /setup or !setup for the first time before @FFA Bot Manager exists (or by Server Owner / Administrator to create/assign the role)
     if (allowBootstrapSetup && guild) {
       const memberId = member.id || member.user?.id;
       if (memberId && guild.ownerId === memberId) {
@@ -2928,7 +2921,6 @@ class DiscordBotManager {
       return;
     }
 
-    // Strip resolved <@id>, <@&roleId>, and <#channelId> tags before scanning for plain-text @username mentions
     const textWithoutDiscordTags = processedText
       .replace(/<@!?\d+>/g, ' ')
       .replace(/<@&\d+>/g, ' ')
@@ -2943,7 +2935,6 @@ class DiscordBotManager {
 
       let found: any = null;
 
-      // 1. If the token is a Discord snowflake ID (e.g. @760953717917876224)
       if (/^\d{17,20}$/.test(token)) {
         found = message.guild?.members.cache.get(token) || null;
         if (!found && message.guild) {
@@ -2954,12 +2945,10 @@ class DiscordBotManager {
           if (directUser) {
             found = { id: directUser.id, user: directUser, displayName: directUser.displayName || directUser.username };
           } else if (isValidDiscordSnowflake(token)) {
-            // Valid snowflake fallback
             found = { id: token, user: { id: token, bot: false, username: `user_${token.slice(-4)}` }, displayName: `Player ${token.slice(-4)}` };
           }
         }
       } else {
-        // 2. Search by username or display name
         found = message.guild?.members.cache.find(m =>
           m.user.username.toLowerCase() === name ||
           m.displayName.toLowerCase() === name ||
@@ -3932,7 +3921,7 @@ class DiscordBotManager {
         return { updated: false, error: `#${targetChannelName} channel not found` };
       }
     }
-
+    if (channel === undefined || channel === null) return { updated: false };
     const existingTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
     const confirmed = existingTeams.filter(t => !t.isWaitlist);
     const waitlist = existingTeams.filter(t => t.isWaitlist);
@@ -4608,8 +4597,6 @@ class DiscordBotManager {
     const managerRoleLabel = currentConfig.managerRoleName || 'FFA Bot Manager';
     const isStaff = this.hasBotManagerRole(interaction.member, interaction.guild, isSetupCommand);
 
-    // Only /slots is accessible to normal members (in addition to registering in #registration and viewing #slot-list).
-    // All other bot slash commands require the @FFA Bot Manager role.
     const publicCommands = ['slots'];
 
     if (!publicCommands.includes(commandName) && !isStaff) {

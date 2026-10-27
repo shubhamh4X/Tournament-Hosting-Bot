@@ -125,28 +125,6 @@ export default function App() {
     }).catch(() => {});
   };
 
-  const handleRegisterTeam = (team: TeamRegistration) => {
-    setRegisteredTeams(prev => [...prev, team]);
-    fetch('/api/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        teamName: team.teamName,
-        captain: team.captain,
-        players: team.players,
-        messageId: team.messageId,
-        channelId: team.channelId
-      })
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (data?.success) {
-          refreshTeams();
-        }
-      })
-      .catch(() => {});
-  };
-
   const handleKickTeam = (teamId: string) => {
     fetch('/api/teams/kick', {
       method: 'POST',
@@ -170,41 +148,6 @@ export default function App() {
     fetch('/api/teams/reset', { method: 'POST' }).catch(() => {});
   };
 
-  const handleDeleteSlot = (slotNumber: number) => {
-    fetch('/api/bot/delete-slot', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slot: slotNumber })
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (data?.teams) {
-          setRegisteredTeams(data.teams);
-        } else {
-          refreshTeams();
-        }
-      })
-      .catch(() => {});
-  };
-
-  const handleDeleteTournament = (deleteChannels: boolean = true) => {
-    setRegisteredTeams([]);
-    setRoomDispatch(null);
-    setConfig(prev => ({
-      ...prev,
-      title: '',
-      totalSlots: 0,
-      categoryName: '',
-      status: 'closed'
-    }));
-
-    fetch('/api/bot/delete-tournament', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deleteChannels })
-    }).catch(() => {});
-  };
-
   const handleRoomDispatch = (creds: RoomCredentials) => {
     setRoomDispatch(creds);
     fetch('/api/idp', {
@@ -212,23 +155,6 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(creds)
     }).catch(() => {});
-  };
-
-  const handleSwapSlots = (slot1: number, slot2: number) => {
-    fetch('/api/teams/swap', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slot1, slot2 })
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (data?.teams) {
-          setRegisteredTeams(data.teams);
-        } else {
-          refreshTeams();
-        }
-      })
-      .catch(() => {});
   };
 
   const confirmedTeams = registeredTeams.filter(t => !t.isWaitlist);

@@ -122,7 +122,6 @@ function saveTournamentState() {
       'utf8'
     );
   } catch (err) {
-    // Ignore write errors in restricted environments
   }
 }
 
@@ -148,7 +147,6 @@ function loadTournamentState() {
       }
     }
   } catch (err) {
-    // Ignore read errors
   }
 }
 
@@ -216,7 +214,6 @@ async function startServer() {
     delete incoming.explicitStatusCommand;
 
     if (!isExplicitStatusChange) {
-      // Never let background/general config saves close or pause registration without an explicit command
       delete incoming.status;
     } else if (incoming.status === 'paused' || incoming.status === 'closed') {
       config.explicitlyStoppedOrPaused = true;
@@ -323,7 +320,6 @@ async function startServer() {
         };
       }
 
-      // Validate Region (Required dropdown with: India, Pakistan, Bangladesh)
       const validRegions = ['India', 'Pakistan', 'Bangladesh'] as const;
       if (!region || !validRegions.includes(region as any)) {
         return {
@@ -336,7 +332,6 @@ async function startServer() {
         };
       }
 
-      // Validate Single WhatsApp Number (Auto-prefixed with selected region country code)
       const rawWa1 = typeof whatsappNumber1 === 'string' ? whatsappNumber1.trim() : '';
       const waNorm = discordBot.normalizeWhatsAppWithRegion(rawWa1, region as TournamentRegion);
       if (!waNorm.valid) {
