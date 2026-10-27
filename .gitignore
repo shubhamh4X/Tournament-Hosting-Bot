@@ -1,8 +1,12 @@
 node_modules/
 build/
 dist/
+server.js
 coverage/
 .DS_Store
 *.log
+*.tmp
 .env*
 !.env.example
+.tournament-state.json
+.aistudio/

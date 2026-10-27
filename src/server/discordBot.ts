@@ -26,6 +26,10 @@ import {
 } from 'discord.js';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __botFilename = fileURLToPath(import.meta.url);
+const __botDirname = path.dirname(__botFilename);
 
 export interface BotGuildInfo {
   id: string;
@@ -1666,7 +1670,7 @@ class DiscordBotManager {
       this.logEvent('error', `Shard #${id} disconnected from Discord Gateway (Code ${event.code}).`);
     });
 
-    this.client.on('ready', async () => {
+    this.client.on('clientReady', async () => {
       console.log(`[DiscordBot] Logged in as ${this.client?.user?.tag}`);
       this.isReconnectingGateway = false;
       this.status.isOnline = true;
@@ -1717,8 +1721,13 @@ class DiscordBotManager {
       setTimeout(async () => {
         try {
           if (this.client?.user && !this.client.user.avatar) {
-            const logoPath = path.join(process.cwd(), 'public/assets/glacier-cup-logo.png');
-            if (fs.existsSync(logoPath)) {
+            const candidatePaths = [
+              path.resolve(__botDirname, '../../public/assets/glacier-cup-logo.png'),
+              path.resolve(__botDirname, 'public/assets/glacier-cup-logo.png'),
+              path.resolve(process.cwd(), 'public/assets/glacier-cup-logo.png')
+            ];
+            const logoPath = candidatePaths.find((p) => fs.existsSync(p));
+            if (logoPath) {
               const logoBuffer = fs.readFileSync(logoPath);
               await this.client.user.setAvatar(logoBuffer).catch(() => {});
             }

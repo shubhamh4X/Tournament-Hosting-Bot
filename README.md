@@ -8,17 +8,16 @@
 
 ## Overview
 
-**FFA | Glacier Cup Manager™** (`FFA-Manager`) is a full-stack Discord tournament management system and real-time administration console built for competitive Battlegrounds and Free-For-All esports events. It automates channel provisioning, squad tagcheck verification, multi-group slot allocation, waitlist promotion, and private lobby ID/Password distribution.
+**FFA | Glacier Cup Manager™** (`FFA-Manager`) is a full-stack Discord tournament management system and real-time administration console built for competitive Battlegrounds and Free-For-All esports events. It automates channel provisioning, squad tagcheck verification, region & WhatsApp registration collection, multi-group slot allocation, private team voice channel creation, waitlist promotion, and private lobby ID/Password distribution.
 
 ---
 
 ## Key Features
 
-- **Automated Server Provisioning (`/setup` & `/create tournament`)**: Creates the tournament category, `#📋┃rules-format`, `#📝┃registration`, `#📊┃slot-list`, `#🔑┃id-pass`, and the `@Verified Team` + `@Confirmed Slot` roles in one command.
-- **Custom Rules Prompt & Modal**: Prompts tournament administrators to input or paste custom tournament rules upon setup and publishes them directly to `#📋┃rules-format`.
+- **Automated Server Provisioning (`/setup` & `/create tournament`)**: Creates the tournament category, `#📋┃rules-format`, `#📝┃registration`, `#📊┃slot-list`, `#🔑┃id-pass`, `#🔒┃registration-details` (restricted to `@FFA Bot Manager`), and the `@Verified Team` + `@Confirmed Slot` + `@FFA Bot Manager` roles in one command.
+- **Interactive Registration Modal**: Publishes an interactive registration embed in `#📝┃registration` with a **Register Your Team** button opening a modal for Team Name, Region (`India`, `Pakistan`, `Bangladesh` with automatic country code), WhatsApp Number, and exact-count Player Tag selection.
 - **High-Concurrency Tagcheck Engine**: Serialized atomic slot allocation queue and cache-first user resolution prevent duplicate slots or rate-limit bottlenecks even when dozens of teams register simultaneously.
-- **EasyTag & Multi-Team Protection**: Converts raw numeric Discord User IDs into mentions automatically, blocks cross-team duplicate player registrations, and rejects blacklisted players.
-- **Waitlist Auto-Promotion**: Deleting a confirmed slot (`/delete slot`) automatically promotes the #1 waitlisted squad and updates `#📊┃slot-list` in real time.
+- **Waitlist Auto-Promotion**: Deleting a confirmed slot (`/delete slot`) automatically promotes the #1 waitlisted squad and updates `#📊┃slot-list` (grouped by Group A, Group B, etc.) in real time.
 - **Private Room ID & Password Dispatch (`/idpass`)**: Broadcasts lobby credentials exclusively to `#🔑┃id-pass` (restricted to `@Verified Team`).
 
 ---
@@ -51,39 +50,88 @@ Supports both **Discord Slash Commands (`/`)** and **Prefix Commands (`!`)**:
 
 ---
 
-## Registration Format
+## Required Environment Variables
 
-Players register in `#📝┃registration` using the following format:
+Create a `.env` file in the root directory (copied from `.env.example`) or configure these variables in your hosting platform's Environment / Secrets settings:
 
-```text
-Team Name: Team Glacier
-Player 1: @Player1
-Player 2: @Player2
-Player 3: @Player3
-Player 4: @Player4
-```
+| Variable | Required | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `DISCORD_TOKEN` | **Yes** (or `BOT_TOKEN`) | — | Your Discord Bot Token from the [Discord Developer Portal](https://discord.com/developers/applications) |
+| `PORT` | No | `3000` | HTTP server port for the web dashboard and health checks |
+| `HOST` | No | `0.0.0.0` | Network interface to bind the HTTP server |
+| `NODE_ENV` | No | `production` | Set to `production` in deployed environments to serve compiled static assets |
+| `STATE_FILE_PATH` | No | `./.tournament-state.json` | Custom file path for persistent tournament state (e.g., `/data/.tournament-state.json` on mounted volumes) |
+
+> **Important Discord Bot Portal Settings:**
+> Under **Discord Developer Portal → Your Application → Bot → Privileged Gateway Intents**, enable:
+> 1. **Server Members Intent**
+> 2. **Message Content Intent**
 
 ---
 
-## Setup & Installation
+## Deployment Guide
 
-### 1. Prerequisites
-- **Node.js** 18+
-- A Discord Bot Token from the [Discord Developer Portal](https://discord.com/developers/applications) with **Server Members Intent** and **Message Content Intent** enabled under the **Bot** tab.
+### 1. Deploy from GitHub or Extracted ZIP (VPS / Linux / Windows / macOS)
 
-### 2. Environment Configuration
-Copy `.env.example` to `.env` and configure your token:
-
-```env
-PORT=3000
-DISCORD_TOKEN="YOUR_DISCORD_BOT_TOKEN"
-```
-
-### 3. Install & Run
+**Prerequisites:** Node.js **22.6+** (for native `npm start` / `node server.ts`) or Node.js **20+** (using `npm run start:compiled` or `npm run start:tsx`).
 
 ```bash
+# 1. Clone the repository or extract the ZIP archive and enter the folder
+git clone <your-repo-url>
+cd ffa-glacier-cup-manager
+
+# 2. Configure environment variables
+cp .env.example .env
+# Edit .env and set DISCORD_TOKEN="your_bot_token_here"
+
+# 3. Install dependencies
 npm install
-npm run dev
+
+# 4. Build the frontend (dist/) and compiled server bundle (server.js)
+npm run build
+
+# 5. Start in production mode
+# Option A (Node.js 22.6+):
+NODE_ENV=production npm start
+
+# Option B (Node.js 18/20/22+ using compiled bundle):
+npm run start:compiled
 ```
 
-Open `http://localhost:3000` to access the **FFA | Glacier Cup Manager™** web dashboard, connect or monitor your live Discord bot, manage slots, and dispatch room credentials.
+### 2. Deploy on Railway or Render
+
+1. Connect your GitHub repository to **Railway** or **Render** (Web Service).
+2. Configure the service settings:
+   - **Build Command:** `npm install && npm run build`
+   - **Start Command:** `NODE_ENV=production npm start` (or `npm run start:compiled`)
+   - **Health Check Path:** `/api/health`
+3. Add Environment Variables in the platform dashboard:
+   - `DISCORD_TOKEN` = `<your_discord_bot_token>`
+   - `NODE_ENV` = `production`
+4. **Persistent State (Recommended):** Attach a persistent volume/disk (e.g., mounted at `/data`) and set `STATE_FILE_PATH=/data/.tournament-state.json` so tournament rosters survive container redeployments.
+
+### 3. Deploy on Pterodactyl Panel (Discord Bot Egg)
+
+1. Upload the extracted ZIP files (excluding `node_modules`) or configure the Git repository in your Pterodactyl server.
+2. Set the `.env` file or Startup Variables:
+   - `DISCORD_TOKEN` (or `BOT_TOKEN`) = `<your_discord_bot_token>`
+   - `NODE_ENV` = `production`
+3. Run `npm install && npm run build`, and set the startup command to:
+   - `node server.js` (after running `npm run build`) or `node server.ts` (on Node 22+ image) or `npx tsx server.ts`.
+
+### 4. Deploy with Docker
+
+```bash
+# Build the image
+docker build -t ffa-glacier-cup-manager .
+
+# Run the container with persistent state mounted
+docker run -d \
+  --name ffa-glacier-bot \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -e DISCORD_TOKEN="your_discord_bot_token" \
+  -e STATE_FILE_PATH="/data/.tournament-state.json" \
+  -v $(pwd)/data:/data \
+  ffa-glacier-cup-manager
+```

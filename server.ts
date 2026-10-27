@@ -1,5 +1,5 @@
-import express, { Request, Response } from 'express';
-import { createServer as createViteServer } from 'vite';
+import 'dotenv/config';
+import express, { type Request, type Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -7,7 +7,9 @@ import { discordBot } from './src/server/discordBot.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const STATE_FILE = path.resolve(__dirname, '.tournament-state.json');
+const STATE_FILE = process.env.STATE_FILE_PATH
+  ? path.resolve(process.env.STATE_FILE_PATH)
+  : path.resolve(__dirname, '.tournament-state.json');
 
 interface PlayerTag {
   id: string;
@@ -116,12 +118,16 @@ let lastRoomDispatch: RoomCredentials | null = null;
 
 function saveTournamentState() {
   try {
-    fs.writeFileSync(
-      STATE_FILE,
-      JSON.stringify({ config, registeredTeams, lastRoomDispatch }, null, 2),
-      'utf8'
-    );
+    const dir = path.dirname(STATE_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const serialized = JSON.stringify({ config, registeredTeams, lastRoomDispatch }, null, 2);
+    const tempFile = `${STATE_FILE}.tmp`;
+    fs.writeFileSync(tempFile, serialized, 'utf8');
+    fs.renameSync(tempFile, STATE_FILE);
   } catch (err) {
+    console.error('[Server] Failed to save tournament state to disk:', err);
   }
 }
 
@@ -147,24 +153,35 @@ function loadTournamentState() {
       }
     }
   } catch (err) {
+    console.error('[Server] Failed to load tournament state from disk:', err);
   }
 }
 
 loadTournamentState();
 
 process.on('unhandledRejection', (reason) => {
-  console.log('[Server] Handled async rejection:', reason);
+  console.error('[Server] Handled async rejection:', reason);
 });
 
 process.on('uncaughtException', (err) => {
-  console.log('[Server] Handled runtime exception:', err.message);
+  console.error('[Server] Handled runtime exception:', err.message);
 });
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  const parsedPort = parseInt(process.env.PORT || process.env.SERVER_PORT || '3000', 10);
+  const PORT = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 3000;
+  const HOST = process.env.HOST || '0.0.0.0';
 
   app.use(express.json());
+
+  app.get('/api/health', (_req: Request, res: Response) => {
+    res.json({
+      status: 'ok',
+      uptime: process.uptime(),
+      botOnline: discordBot.getStatus().isOnline
+    });
+  });
 
   discordBot.getTournamentConfig = () => config;
   discordBot.getRegisteredTeams = () => registeredTeams;
@@ -192,16 +209,27 @@ async function startServer() {
     console.log(`[Tournament] Active tournament deleted & roster reset via Discord command`);
   };
 
-  const encodedFallback = 'Y2g5dWFwQTE2TlBIQkJfYjl2RXMySERUNUpjeFA0TkVxSk5KTnUuU2JtT3FHLndNM01qWTJORGs0TlRBNE1qQTVNelE2VVRN';
-  const defaultToken = process.env.DISCORD_TOKEN || Buffer.from(encodedFallback, 'base64').toString('utf8').split('').reverse().join('');
-  if (defaultToken) {
-    discordBot.start(defaultToken).then(res => {
+  const getConfiguredToken = (): string => {
+    return (process.env.DISCORD_TOKEN || process.env.BOT_TOKEN || '').trim();
+  };
+
+  const initialToken = getConfiguredToken();
+  if (initialToken) {
+    discordBot.start(initialToken).then(res => {
       if (res.success) {
         console.log('FFA-Manager connected to Discord Gateway on startup.');
       } else {
-        console.log('FFA-Manager startup notice:', res.error);
+        console.error('FFA-Manager startup notice:', res.error);
       }
+    }).catch((err) => {
+      console.error('FFA-Manager unexpected startup error:', err);
     });
+  } else {
+    console.warn(
+      '[Server] Notice: DISCORD_TOKEN environment variable is not set. ' +
+      'Configure DISCORD_TOKEN in your .env file or hosting environment to auto-connect on startup, ' +
+      'or connect manually via the web dashboard.'
+    );
   }
 
   app.get('/api/config', (_req: Request, res: Response) => {
@@ -592,18 +620,24 @@ async function startServer() {
   });
 
   app.post('/api/bot/start', async (req: Request, res: Response) => {
-    const tokenToUse = (req.body?.token && String(req.body.token).trim()) || defaultToken;
+    const tokenToUse = (req.body?.token && String(req.body.token).trim()) || getConfiguredToken();
     if (!tokenToUse) {
-      return res.status(400).json({ success: false, error: 'Bot token is required' });
+      return res.status(400).json({
+        success: false,
+        error: 'Bot token is required. Set DISCORD_TOKEN in your .env/environment or enter a token in the dashboard.'
+      });
     }
     const result = await discordBot.start(tokenToUse);
     res.json(result);
   });
 
   app.post('/api/bot/connect', async (req: Request, res: Response) => {
-    const tokenToUse = (req.body?.token && String(req.body.token).trim()) || defaultToken;
+    const tokenToUse = (req.body?.token && String(req.body.token).trim()) || getConfiguredToken();
     if (!tokenToUse) {
-      return res.status(400).json({ success: false, error: 'Bot token is required' });
+      return res.status(400).json({
+        success: false,
+        error: 'Bot token is required. Set DISCORD_TOKEN in your .env/environment or enter a token in the dashboard.'
+      });
     }
     const result = await discordBot.start(tokenToUse);
     res.json(result);
@@ -779,24 +813,73 @@ async function startServer() {
     res.send(csv);
   });
 
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
+  const distPath = path.resolve(__dirname, 'dist');
+  const distIndexHtml = path.resolve(distPath, 'index.html');
+  const useStaticBuild = process.env.NODE_ENV === 'production' && fs.existsSync(distIndexHtml);
+
+  if (!useStaticBuild) {
+    try {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true, hmr: false },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch (viteErr) {
+      console.warn('[Server] Vite middleware unavailable, falling back to static asset serving:', viteErr);
+      app.use(express.static(distPath));
+    }
   } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (_req: Request, res: Response) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+    app.use(express.static(distPath));
+    app.get('*', (req: Request, res: Response) => {
+      if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ error: 'API endpoint not found' });
+      }
+      res.sendFile(distIndexHtml);
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`FFA | Glacier Cup Manager™ server running on http://0.0.0.0:${PORT}`);
+  const httpServer = app.listen(PORT, HOST, () => {
+    console.log(`FFA | Glacier Cup Manager™ server running on http://${HOST}:${PORT}`);
   });
+
+  httpServer.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE' || err.code === 'EACCES') {
+      console.warn(`[Server] Port ${PORT} is unavailable (${err.code}). Retrying on an available port so Discord bot stays online...`);
+      httpServer.listen(0, HOST, () => {
+        const addr = httpServer.address();
+        const fallbackPort = typeof addr === 'object' && addr ? addr.port : 'random';
+        console.log(`FFA | Glacier Cup Manager™ server running on fallback http://${HOST}:${fallbackPort}`);
+      });
+      return;
+    }
+    console.error(`[Server] HTTP server error on ${HOST}:${PORT}:`, err.message);
+  });
+
+  let isShuttingDown = false;
+  const gracefulShutdown = async (signal: string) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.log(`[Server] Received ${signal}. Saving tournament state and shutting down gracefully...`);
+    try {
+      saveTournamentState();
+      await discordBot.stop();
+    } catch (err) {
+      console.error('[Server] Error during shutdown cleanup:', err);
+    }
+    httpServer.close(() => {
+      process.exit(0);
+    });
+    setTimeout(() => {
+      process.exit(0);
+    }, 5000).unref();
+  };
+
+  process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
+  process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
 }
 
 startServer().catch(err => {
-  console.log('Failed to start server:', err);
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });
