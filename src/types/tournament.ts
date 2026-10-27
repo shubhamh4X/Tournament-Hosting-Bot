@@ -30,8 +30,6 @@ export interface TeamRegistration {
   whatsappNumber1?: string;
   whatsappNumber2?: string;
   region?: TournamentRegion;
-  whatsappVerified?: boolean;
-  whatsappVerifiedAt?: string;
 }
 
 export interface TournamentConfig {

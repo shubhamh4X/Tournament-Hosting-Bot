@@ -4,7 +4,6 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { discordBot } from './src/server/discordBot.ts';
-import { twilioVerifyService } from './src/server/twilioVerifyService.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,8 +40,6 @@ interface TeamRegistration {
   whatsappNumber1?: string;
   whatsappNumber2?: string;
   region?: TournamentRegion;
-  whatsappVerified?: boolean;
-  whatsappVerifiedAt?: string;
 }
 
 interface TournamentConfig {
@@ -312,86 +309,6 @@ async function startServer() {
     });
   });
 
-  app.get('/api/whatsapp-otp/status', (_req: Request, res: Response) => {
-    res.json(twilioVerifyService.getConfigStatus());
-  });
-
-  app.post('/api/whatsapp-otp/send', async (req: Request, res: Response) => {
-    const { phone, region } = req.body;
-    if (!phone || typeof phone !== 'string') {
-      return res.status(400).json({
-        success: false,
-        code: 'INVALID_PHONE_NUMBER',
-        error: 'Phone number is required.'
-      });
-    }
-
-    const validRegions = ['India', 'Pakistan', 'Bangladesh'] as const;
-    const targetRegion = (region && validRegions.includes(region as any)) ? (region as TournamentRegion) : 'India';
-
-    const waNorm = discordBot.normalizeWhatsAppWithRegion(phone, targetRegion);
-    if (!waNorm.valid) {
-      const expectedCode = discordBot.getRegionCountryCode(targetRegion);
-      return res.status(400).json({
-        success: false,
-        code: 'INVALID_PHONE_NUMBER',
-        error: `Invalid WhatsApp Number! Please enter a valid number with ${expectedCode} country code for ${targetRegion} (e.g., ${expectedCode}9876543210).`
-      });
-    }
-
-    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || req.socket.remoteAddress || '127.0.0.1';
-
-    const result = await twilioVerifyService.sendWhatsAppOtp(waNorm.formatted, clientIp);
-
-    if (!result.success) {
-      const statusCode = result.code === 'RATE_LIMITED' ? 429 : result.code === 'TWILIO_NOT_CONFIGURED' ? 503 : 400;
-      return res.status(statusCode).json(result);
-    }
-
-    return res.json({
-      success: true,
-      message: `Verification code sent to your WhatsApp (${waNorm.formatted}).`,
-      cooldownSeconds: result.cooldownSeconds || 60,
-      normalizedPhone: waNorm.formatted
-    });
-  });
-
-  app.post('/api/whatsapp-otp/verify', async (req: Request, res: Response) => {
-    const { phone, code, region } = req.body;
-    if (!phone || typeof phone !== 'string' || !code || typeof code !== 'string') {
-      return res.status(400).json({
-        success: false,
-        code: 'MISSING_FIELDS',
-        error: 'Phone number and verification code are required.'
-      });
-    }
-
-    const validRegions = ['India', 'Pakistan', 'Bangladesh'] as const;
-    const targetRegion = (region && validRegions.includes(region as any)) ? (region as TournamentRegion) : 'India';
-
-    const waNorm = discordBot.normalizeWhatsAppWithRegion(phone, targetRegion);
-    if (!waNorm.valid) {
-      return res.status(400).json({
-        success: false,
-        code: 'INVALID_PHONE_NUMBER',
-        error: 'Invalid phone number format.'
-      });
-    }
-
-    const result = await twilioVerifyService.verifyWhatsAppOtp(waNorm.formatted, code, targetRegion);
-
-    if (!result.success) {
-      return res.status(400).json(result);
-    }
-
-    return res.json({
-      success: true,
-      verificationToken: result.verificationToken,
-      message: `WhatsApp number ${waNorm.formatted} verified successfully!`,
-      verifiedPhone: waNorm.formatted
-    });
-  });
-
   app.post('/api/register', async (req: Request, res: Response) => {
     const {
       teamName,
@@ -400,8 +317,7 @@ async function startServer() {
       messageId,
       channelId,
       whatsappNumber1,
-      region,
-      verificationToken
+      region
     } = req.body;
 
     const result = await discordBot.withOperationLock(async () => {
@@ -458,41 +374,6 @@ async function startServer() {
         };
       }
       const cleanWa1 = waNorm.formatted;
-
-      // Enforce real WhatsApp OTP verification
-      if (twilioVerifyService.isConfigured()) {
-        if (!verificationToken) {
-          return {
-            status: 400,
-            body: {
-              success: false,
-              code: 'WHATSAPP_VERIFICATION_REQUIRED',
-              error: 'WhatsApp phone number verification is mandatory. Please click "Verify on WhatsApp" to receive and confirm your OTP before registering.'
-            }
-          };
-        }
-
-        const tokenCheck = twilioVerifyService.consumeVerificationToken(verificationToken, cleanWa1);
-        if (!tokenCheck.valid) {
-          return {
-            status: 400,
-            body: {
-              success: false,
-              code: tokenCheck.code || 'INVALID_VERIFICATION_TOKEN',
-              error: tokenCheck.error || 'WhatsApp verification failed or has expired. Please verify your number again.'
-            }
-          };
-        }
-      } else {
-        return {
-          status: 503,
-          body: {
-            success: false,
-            code: 'TWILIO_NOT_CONFIGURED',
-            error: 'Twilio WhatsApp verification is not configured on this server. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_VERIFY_SERVICE_SID in server environment to enable verified tournament registrations.'
-          }
-        };
-      }
 
       const confirmedCount = registeredTeams.filter(t => !t.isWaitlist).length;
       const waitlistCount = registeredTeams.filter(t => t.isWaitlist).length;
@@ -617,9 +498,7 @@ async function startServer() {
         teamCategoryName: cleanedName,
         teamVoiceChannelName: cleanedName,
         whatsappNumber1: cleanWa1,
-        region: region as TournamentRegion,
-        whatsappVerified: true,
-        whatsappVerifiedAt: new Date().toISOString()
+        region: region as TournamentRegion
       };
 
       if (config.autoCreateTeamVoice !== false) {
@@ -872,7 +751,7 @@ async function startServer() {
     const guild = guildId ? client?.guilds.cache.get(guildId) : client?.guilds.cache.first();
 
     if (preview) {
-      const previewData = discordBot.previewDeleteTournament(guild, deleteChannels !== false);
+      const previewData = await discordBot.previewDeleteTournament(guild, deleteChannels !== false);
       return res.json({
         success: true,
         preview: previewData
