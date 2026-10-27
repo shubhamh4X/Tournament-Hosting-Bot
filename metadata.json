@@ -1,0 +1,6 @@
+{
+  "name": "FFA | Glacier Cup Manager™ — Discord Tournament & Scrims Bot",
+  "description": "Official FFA | Glacier Cup Manager™ (FFA-Manager) tag-basis Discord tournament and scrims registration bot with EasyTag, anti-duplicate roster validation, live slot allocation, and room management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

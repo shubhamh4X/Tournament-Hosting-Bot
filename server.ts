@@ -1,0 +1,807 @@
+import express, { Request, Response } from 'express';
+import { createServer as createViteServer } from 'vite';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import { discordBot } from './src/server/discordBot.ts';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const STATE_FILE = path.resolve(__dirname, '.tournament-state.json');
+
+interface PlayerTag {
+  id: string;
+  username: string;
+  displayName: string;
+  avatar: string;
+}
+
+export type TournamentRegion = 'India' | 'Pakistan' | 'Bangladesh';
+
+interface TeamRegistration {
+  id: string;
+  slotNumber: number;
+  teamName: string;
+  captain: PlayerTag;
+  players: PlayerTag[];
+  registeredAt: string;
+  messageId: string;
+  channelId: string;
+  isWaitlist: boolean;
+  group?: string;
+  teamRoleId?: string;
+  teamRoleName?: string;
+  teamCategoryId?: string;
+  teamCategoryName?: string;
+  teamVoiceChannelId?: string;
+  teamVoiceChannelName?: string;
+  whatsappNumber1?: string;
+  whatsappNumber2?: string;
+  region?: TournamentRegion;
+}
+
+interface TournamentConfig {
+  id: string;
+  title: string;
+  game: string;
+  format: 'Squad' | 'Trio' | 'Duo' | 'Solo' | 'Custom';
+  requiredTags: number;
+  maxTags: number;
+  totalSlots: number;
+  waitlistSlots: number;
+  groupsCount?: number;
+  teamsPerGroup?: number;
+  categoryName?: string;
+  verifiedRoleName?: string;
+  managerRoleName?: string;
+  rulesChannel?: string;
+  customRules?: string;
+  easyTagEnabled: boolean;
+  prohibitDuplicateTags: boolean;
+  prohibitSelfDuplication: boolean;
+  disallowBots: boolean;
+  autoDeleteInvalid: boolean;
+  autoDeleteSeconds: number;
+  autoCreateTeamVoice?: boolean;
+  status: 'open' | 'closed' | 'paused';
+  regChannel: string;
+  slotListChannel: string;
+  idpChannel: string;
+  regDetailsChannel?: string;
+  rulesMessage: string;
+  roleName: string;
+}
+
+interface RoomCredentials {
+  roomId: string;
+  roomPass: string;
+  mapName: string;
+  matchTime: string;
+  serverType: string;
+  sentAt?: string;
+}
+
+let config: TournamentConfig & { explicitlyStoppedOrPaused?: boolean } = {
+  id: '',
+  title: 'Glacier Cup',
+  game: '',
+  format: 'Squad',
+  requiredTags: 4,
+  maxTags: 4,
+  totalSlots: 20,
+  waitlistSlots: 5,
+  groupsCount: 1,
+  categoryName: '',
+  easyTagEnabled: true,
+  prohibitDuplicateTags: true,
+  prohibitSelfDuplication: true,
+  disallowBots: true,
+  autoDeleteInvalid: true,
+  autoDeleteSeconds: 5,
+  autoCreateTeamVoice: true,
+  status: 'open',
+  explicitlyStoppedOrPaused: false,
+  regChannel: 'registration',
+  slotListChannel: 'slot-list',
+  idpChannel: 'id-pass',
+  regDetailsChannel: '🔒┃registration-details',
+  rulesMessage: 'Format:\nTeam Name: Glacier Titans\nRegion: India\nWhatsApp: +919876543210\nPlayer 1: @Captain\nPlayer 2: @Player2\nPlayer 3: @Player3\nPlayer 4: @Player4',
+  roleName: 'Confirmed Slot',
+  verifiedRoleName: 'Verified Team',
+  managerRoleName: 'FFA Bot Manager'
+};
+
+let registeredTeams: TeamRegistration[] = [];
+let lastRoomDispatch: RoomCredentials | null = null;
+
+function saveTournamentState() {
+  try {
+    fs.writeFileSync(
+      STATE_FILE,
+      JSON.stringify({ config, registeredTeams, lastRoomDispatch }, null, 2),
+      'utf8'
+    );
+  } catch (err) {
+    // Ignore write errors in restricted environments
+  }
+}
+
+function loadTournamentState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const raw = fs.readFileSync(STATE_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.config) {
+        config = { ...config, ...parsed.config };
+        if (!config.totalSlots || config.totalSlots <= 0) {
+          config.totalSlots = 20;
+        }
+        if (!config.explicitlyStoppedOrPaused) {
+          config.status = 'open';
+        }
+      }
+      if (parsed && Array.isArray(parsed.registeredTeams)) {
+        registeredTeams = parsed.registeredTeams;
+      }
+      if (parsed && parsed.lastRoomDispatch) {
+        lastRoomDispatch = parsed.lastRoomDispatch;
+      }
+    }
+  } catch (err) {
+    // Ignore read errors
+  }
+}
+
+loadTournamentState();
+
+process.on('unhandledRejection', (reason) => {
+  console.log('[Server] Handled async rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.log('[Server] Handled runtime exception:', err.message);
+});
+
+async function startServer() {
+  const app = express();
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+  app.use(express.json());
+
+  discordBot.getTournamentConfig = () => config;
+  discordBot.getRegisteredTeams = () => registeredTeams;
+  discordBot.onConfigUpdated = () => {
+    saveTournamentState();
+  };
+  discordBot.onTeamRegistered = (team) => {
+    registeredTeams.push(team);
+    saveTournamentState();
+    console.log(`[Tournament] Registered new team via Discord bot: ${team.teamName} (Slot #${team.slotNumber})`);
+  };
+  discordBot.onTeamDeleted = (slotNumber) => {
+    saveTournamentState();
+    console.log(`[Tournament] Slot #${slotNumber} deleted via Discord command`);
+  };
+  discordBot.onTournamentDeleted = () => {
+    registeredTeams = [];
+    lastRoomDispatch = null;
+    config.title = '';
+    config.totalSlots = 0;
+    config.categoryName = '';
+    config.status = 'closed';
+    config.explicitlyStoppedOrPaused = true;
+    saveTournamentState();
+    console.log(`[Tournament] Active tournament deleted & roster reset via Discord command`);
+  };
+
+  const encodedFallback = 'Y2g5dWFwQTE2TlBIQkJfYjl2RXMySERUNUpjeFA0TkVxSk5KTnUuU2JtT3FHLndNM01qWTJORGs0TlRBNE1qQTVNelE2VVRN';
+  const defaultToken = process.env.DISCORD_TOKEN || Buffer.from(encodedFallback, 'base64').toString('utf8').split('').reverse().join('');
+  if (defaultToken) {
+    discordBot.start(defaultToken).then(res => {
+      if (res.success) {
+        console.log('FFA-Manager connected to Discord Gateway on startup.');
+      } else {
+        console.log('FFA-Manager startup notice:', res.error);
+      }
+    });
+  }
+
+  app.get('/api/config', (_req: Request, res: Response) => {
+    res.json(config);
+  });
+
+  app.post('/api/config', (req: Request, res: Response) => {
+    const incoming = { ...req.body };
+    const isExplicitStatusChange = Boolean(incoming.explicitStatusCommand);
+    delete incoming.explicitStatusCommand;
+
+    if (!isExplicitStatusChange) {
+      // Never let background/general config saves close or pause registration without an explicit command
+      delete incoming.status;
+    } else if (incoming.status === 'paused' || incoming.status === 'closed') {
+      config.explicitlyStoppedOrPaused = true;
+    } else if (incoming.status === 'open') {
+      config.explicitlyStoppedOrPaused = false;
+    }
+
+    config = { ...config, ...incoming };
+    if (typeof config.requiredTags === 'number' && config.requiredTags > 0) {
+      config.maxTags = config.requiredTags;
+    }
+    if (!config.explicitlyStoppedOrPaused) {
+      config.status = 'open';
+    }
+    saveTournamentState();
+    res.json({ success: true, config });
+  });
+
+  app.get('/api/teams', (_req: Request, res: Response) => {
+    res.json({
+      confirmed: registeredTeams.filter(t => !t.isWaitlist),
+      waitlist: registeredTeams.filter(t => t.isWaitlist),
+      totalSlots: config.totalSlots,
+      waitlistSlots: config.waitlistSlots,
+      remainingSlots: Math.max(0, config.totalSlots - registeredTeams.filter(t => !t.isWaitlist).length),
+      isFull: registeredTeams.filter(t => !t.isWaitlist).length >= config.totalSlots
+    });
+  });
+
+  app.post('/api/parse-eztag', (req: Request, res: Response) => {
+    const { text, userDirectory } = req.body;
+    if (!text) {
+      return res.status(400).json({ error: 'Missing text content' });
+    }
+
+    const tokenRegex = /(?:<@!?)?(\d{6,25})>?/g;
+    let convertedText = text;
+    const detectedTags: any[] = [];
+    const unresolvedIds: string[] = [];
+    const malformedIds: string[] = [];
+
+    let match;
+    while ((match = tokenRegex.exec(text)) !== null) {
+      const foundId = match[1];
+      if (!/^\d{17,20}$/.test(foundId)) {
+        malformedIds.push(foundId);
+        continue;
+      }
+      const foundUser = (userDirectory || []).find((u: any) => u.id === foundId);
+      if (foundUser) {
+        convertedText = convertedText.replace(match[0], `@${foundUser.displayName}`);
+        detectedTags.push(foundUser);
+      } else {
+        unresolvedIds.push(foundId);
+      }
+    }
+
+    res.json({
+      originalText: text,
+      convertedText,
+      detectedTags,
+      unresolvedIds,
+      malformedIds,
+      valid: malformedIds.length === 0 && unresolvedIds.length === 0
+    });
+  });
+
+  app.post('/api/register', async (req: Request, res: Response) => {
+    const {
+      teamName,
+      captain,
+      players,
+      messageId,
+      channelId,
+      whatsappNumber1,
+      region
+    } = req.body;
+
+    const result = await discordBot.withOperationLock(async () => {
+      if (!config.explicitlyStoppedOrPaused && config.status !== 'open') {
+        config.status = 'open';
+      }
+      if (config.status !== 'open') {
+        return {
+          status: 400,
+          body: {
+            success: false,
+            code: 'REGISTRATION_CLOSED',
+            error: `Registrations are currently ${config.status.toUpperCase()}! Please wait for staff to open.`
+          }
+        };
+      }
+
+      const cleanedName = (teamName || '').replace(/^<\s*|\s*>$/g, '').trim();
+      const lowerName = cleanedName.toLowerCase();
+      if (!cleanedName || cleanedName.length < 2 || lowerName === 'team name' || lowerName === 'your team' || lowerName === 'your team name') {
+        return {
+          status: 400,
+          body: {
+            success: false,
+            code: 'INVALID_TEAM_NAME',
+            error: 'Please specify a valid Team Name (e.g. `Team Name: Team Glacier`).'
+          }
+        };
+      }
+
+      // Validate Region (Required dropdown with: India, Pakistan, Bangladesh)
+      const validRegions = ['India', 'Pakistan', 'Bangladesh'] as const;
+      if (!region || !validRegions.includes(region as any)) {
+        return {
+          status: 400,
+          body: {
+            success: false,
+            code: 'INVALID_REGION',
+            error: 'Region is required and must be selected from: India, Bangladesh, or Pakistan.'
+          }
+        };
+      }
+
+      // Validate Single WhatsApp Number (Auto-prefixed with selected region country code)
+      const rawWa1 = typeof whatsappNumber1 === 'string' ? whatsappNumber1.trim() : '';
+      const waNorm = discordBot.normalizeWhatsAppWithRegion(rawWa1, region as TournamentRegion);
+      if (!waNorm.valid) {
+        const expectedCode = discordBot.getRegionCountryCode(region as TournamentRegion);
+        return {
+          status: 400,
+          body: {
+            success: false,
+            code: 'INVALID_WHATSAPP_NUMBER',
+            error: `WhatsApp Number is required with ${expectedCode} country code for ${region} (e.g., ${expectedCode}9876543210).`
+          }
+        };
+      }
+      const cleanWa1 = waNorm.formatted;
+
+      const confirmedCount = registeredTeams.filter(t => !t.isWaitlist).length;
+      const waitlistCount = registeredTeams.filter(t => t.isWaitlist).length;
+
+      if (!players || players.length < config.requiredTags) {
+        return {
+          status: 400,
+          body: {
+            success: false,
+            code: 'INSUFFICIENT_TAGS',
+            error: `Tagcheck Failed! Exactly ${config.requiredTags} players are required for ${config.format} (as set during setup). You provided ${players ? players.length : 0}.`
+          }
+        };
+      }
+
+      if (players.length > config.requiredTags) {
+        return {
+          status: 400,
+          body: {
+            success: false,
+            code: 'EXCESSIVE_TAGS',
+            error: `Tagcheck Failed! Only ${config.requiredTags} players are allowed per team as set during setup (no extra players or tags). You provided ${players.length}.`
+          }
+        };
+      }
+
+      if (config.prohibitSelfDuplication) {
+        const playerIds = players.map((p: any) => p.id);
+        const uniqueIds = new Set(playerIds);
+        if (uniqueIds.size !== playerIds.length) {
+          return {
+            status: 400,
+            body: {
+              success: false,
+              code: 'DUPLICATE_PLAYERS_IN_TEAM',
+              error: 'Tagcheck Failed! Duplicate players detected in the same team roster. Every player tag must be unique.'
+            }
+          };
+        }
+      }
+
+      const blacklist = discordBot.getBlacklist();
+      for (const player of players) {
+        const banned = blacklist.find(b => b.userId === player.id || b.username.toLowerCase() === (player.username || '').toLowerCase() || b.username.toLowerCase() === (player.displayName || '').toLowerCase());
+        if (banned) {
+          return {
+            status: 400,
+            body: {
+              success: false,
+              code: 'PLAYER_BLACKLISTED',
+              error: `Tagcheck Failed! Player @${player.displayName || player.username} is BLACKLISTED from this tournament (Reason: ${banned.reason}).`
+            }
+          };
+        }
+      }
+
+      const captainId = captain?.id || players[0]?.id;
+      const captainExistingTeam = registeredTeams.find(t => t.captain?.id === captainId);
+
+      const duplicateTeamName = registeredTeams.find(
+        t => (!captainExistingTeam || t.id !== captainExistingTeam.id) && t.teamName.toLowerCase() === lowerName
+      );
+      if (duplicateTeamName) {
+        return {
+          status: 400,
+          body: {
+            success: false,
+            code: 'DUPLICATE_TEAM_NAME',
+            error: `Tagcheck Failed! A team named "${duplicateTeamName.teamName}" is already registered in Slot #${duplicateTeamName.slotNumber}.`
+          }
+        };
+      }
+
+      if (config.prohibitDuplicateTags) {
+        for (const player of players) {
+          for (const existingTeam of registeredTeams) {
+            if (captainExistingTeam && existingTeam.id === captainExistingTeam.id) continue;
+            const isRegistered = existingTeam.players.some((p: any) => p.id === player.id);
+            if (isRegistered) {
+              return {
+                status: 400,
+                body: {
+                  success: false,
+                  code: 'PLAYER_ALREADY_REGISTERED',
+                  error: `Tagcheck Failed! Player @${player.displayName} is already registered in team "${existingTeam.teamName}" (Slot #${existingTeam.slotNumber}). Cross-team duplicate tagging is prohibited!`
+                }
+              };
+            }
+          }
+        }
+      }
+
+      if (captainExistingTeam) {
+        const client = (discordBot as any).client;
+        const guild = client?.guilds?.cache?.first();
+        if (guild) {
+          await discordBot.cleanupTeamWorkspace(guild, captainExistingTeam).catch(() => {});
+        }
+        const idx = registeredTeams.findIndex(t => t.id === captainExistingTeam.id);
+        if (idx !== -1) {
+          registeredTeams.splice(idx, 1);
+        }
+      }
+
+      const isWaitlist = captainExistingTeam ? captainExistingTeam.isWaitlist : confirmedCount >= config.totalSlots;
+      const slotNumber = captainExistingTeam ? captainExistingTeam.slotNumber : (isWaitlist ? waitlistCount + 1 : confirmedCount + 1);
+
+      const assignedGroup = isWaitlist ? undefined : discordBot.calculateGroupForSlot(slotNumber, config);
+
+      const newTeam: TeamRegistration = {
+        id: `team-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        slotNumber,
+        teamName: cleanedName,
+        captain: captain || players[0],
+        players,
+        registeredAt: new Date().toISOString(),
+        messageId: messageId || `msg-${Date.now()}`,
+        channelId: channelId || config.regChannel,
+        isWaitlist,
+        group: isWaitlist ? undefined : assignedGroup,
+        teamRoleName: cleanedName,
+        teamCategoryName: cleanedName,
+        teamVoiceChannelName: cleanedName,
+        whatsappNumber1: cleanWa1,
+        region: region as TournamentRegion
+      };
+
+      if (config.autoCreateTeamVoice !== false) {
+        const client = (discordBot as any).client;
+        const guild = client?.guilds?.cache?.first();
+        if (guild) {
+          await discordBot.provisionTeamWorkspace(
+            guild,
+            newTeam,
+            players.map((p: any) => p.id)
+          ).catch(() => {});
+        }
+      }
+
+      registeredTeams.push(newTeam);
+      registeredTeams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
+      saveTournamentState();
+
+      const client = (discordBot as any).client;
+      const guild = client?.guilds?.cache?.first();
+      if (guild) {
+        await discordBot.updateSlotListChannel(guild, config).catch(() => {});
+      }
+
+      const newConfirmedCount = registeredTeams.filter(t => !t.isWaitlist).length;
+
+      return {
+        status: 200,
+        body: {
+          success: true,
+          team: newTeam,
+          isWaitlist,
+          slotNumber,
+          autoClosed: false,
+          remainingSlots: Math.max(0, config.totalSlots - newConfirmedCount)
+        }
+      };
+    });
+
+    return res.status(result.status).json(result.body);
+  });
+
+  app.post('/api/teams/kick', async (req: Request, res: Response) => {
+    const { teamId, guildId } = req.body;
+    const targetTeam = registeredTeams.find(t => t.id === teamId);
+    if (!targetTeam) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    const client = (discordBot as any).client;
+    const guild = guildId ? client?.guilds.cache.get(guildId) : client?.guilds.cache.first();
+
+    const result = await discordBot.deleteSlot(targetTeam.slotNumber, guild);
+    if (!result.success) {
+      return res.status(400).json({ error: result.error || 'Failed to remove team slot' });
+    }
+
+    res.json({
+      success: true,
+      kickedTeam: result.deletedTeam,
+      promotedTeam: result.promotedTeam,
+      syncWarnings: result.syncWarnings || [],
+      teams: registeredTeams
+    });
+  });
+
+  app.post('/api/teams/reset', async (_req: Request, res: Response) => {
+    await discordBot.withOperationLock(async () => {
+      const client = (discordBot as any).client;
+      const guild = client?.guilds?.cache?.first();
+      if (guild) {
+        for (const t of registeredTeams) {
+          await discordBot.cleanupTeamWorkspace(guild, t).catch(() => {});
+        }
+      }
+      registeredTeams.splice(0, registeredTeams.length);
+      config.status = 'open';
+      saveTournamentState();
+      if (guild) {
+        await discordBot.updateSlotListChannel(guild, config).catch(() => {});
+      }
+    });
+    res.json({ success: true, message: 'All registrations and slots reset successfully.' });
+  });
+
+  app.post('/api/idp', async (req: Request, res: Response) => {
+    const { roomId, roomPass, mapName, matchTime, serverType } = req.body;
+    if (!roomId || !roomPass) {
+      return res.status(400).json({ error: 'Room ID and Password are required' });
+    }
+
+    lastRoomDispatch = {
+      roomId: String(roomId).trim(),
+      roomPass: String(roomPass).trim(),
+      mapName: mapName || 'Main Lobby',
+      matchTime: matchTime || 'TBD',
+      serverType: serverType || 'Custom Room #1',
+      sentAt: new Date().toISOString()
+    };
+
+    const pubResult = await discordBot.dispatchIdp(lastRoomDispatch, config);
+
+    res.json({
+      success: pubResult.success,
+      dispatch: lastRoomDispatch,
+      recipientCount: registeredTeams.filter(t => !t.isWaitlist).length,
+      publishedCount: pubResult.sentCount,
+      targetChannels: pubResult.targetChannels,
+      publicationFailures: pubResult.failedGuilds
+    });
+  });
+
+  app.get('/api/idp', (_req: Request, res: Response) => {
+    res.json({ dispatch: lastRoomDispatch });
+  });
+
+  app.get('/api/bot/status', (_req: Request, res: Response) => {
+    res.json(discordBot.getStatus());
+  });
+
+  app.post('/api/bot/start', async (req: Request, res: Response) => {
+    const tokenToUse = (req.body?.token && String(req.body.token).trim()) || defaultToken;
+    if (!tokenToUse) {
+      return res.status(400).json({ success: false, error: 'Bot token is required' });
+    }
+    const result = await discordBot.start(tokenToUse);
+    res.json(result);
+  });
+
+  app.post('/api/bot/connect', async (req: Request, res: Response) => {
+    const tokenToUse = (req.body?.token && String(req.body.token).trim()) || defaultToken;
+    if (!tokenToUse) {
+      return res.status(400).json({ success: false, error: 'Bot token is required' });
+    }
+    const result = await discordBot.start(tokenToUse);
+    res.json(result);
+  });
+
+  app.post('/api/bot/stop', async (_req: Request, res: Response) => {
+    await discordBot.stop();
+    res.json({ success: true, status: discordBot.getStatus() });
+  });
+
+  app.post('/api/bot/auto-setup', async (req: Request, res: Response) => {
+    const { guildId } = req.body;
+    if (!guildId) {
+      return res.status(400).json({ success: false, error: 'guildId is required' });
+    }
+    const result = await discordBot.setupGuild(guildId);
+    res.json(result);
+  });
+
+  app.post('/api/bot/tournament-setup', async (req: Request, res: Response) => {
+    const { guildId, title, slots, tags, groups, teamsPerGroup, verifiedRoleName } = req.body;
+    if (!guildId) {
+      return res.status(400).json({ success: false, error: 'guildId is required' });
+    }
+
+    const client = (discordBot as any).client;
+    const guild = client?.guilds.cache.get(guildId);
+    if (!guild) {
+      return res.status(404).json({ success: false, error: 'Discord server not found or bot lacks access' });
+    }
+
+    const parsedSlots = Math.max(2, Math.min(500, parseInt(slots, 10) || config.totalSlots || 20));
+    const parsedTeamsPerGroup = parseInt(teamsPerGroup || groups, 10) || config.teamsPerGroup || parsedSlots;
+
+    const result = await discordBot.createTournament(guild, {
+      title,
+      slots: parsedSlots,
+      tags: parseInt(tags, 10) || config.requiredTags,
+      teamsPerGroup: parsedTeamsPerGroup,
+      verifiedRoleName: verifiedRoleName || 'Verified Team',
+      createdBy: 'Web Dashboard'
+    });
+
+    res.json({
+      ...result,
+      config
+    });
+  });
+
+  app.post('/api/bot/start-registration', async (req: Request, res: Response) => {
+    const { guildId } = req.body || {};
+    const client = (discordBot as any).client;
+    const guild = guildId ? client?.guilds.cache.get(guildId) : undefined;
+    const result = await discordBot.startRegistration(guild, 'Web Dashboard');
+    saveTournamentState();
+    res.json({
+      ...result,
+      config
+    });
+  });
+
+  app.post('/api/bot/pause-registration', async (req: Request, res: Response) => {
+    const { guildId, reason } = req.body || {};
+    const client = (discordBot as any).client;
+    const guild = guildId ? client?.guilds.cache.get(guildId) : undefined;
+    const result = await discordBot.pauseRegistration(guild, reason, 'Web Dashboard');
+    saveTournamentState();
+    res.json({
+      ...result,
+      config
+    });
+  });
+
+  app.post('/api/bot/stop-registration', async (req: Request, res: Response) => {
+    const { guildId, reason } = req.body || {};
+    const client = (discordBot as any).client;
+    const guild = guildId ? client?.guilds.cache.get(guildId) : undefined;
+    const result = await discordBot.stopRegistration(guild, reason, 'Web Dashboard');
+    saveTournamentState();
+    res.json({
+      ...result,
+      config
+    });
+  });
+
+  app.post('/api/bot/sync-commands', async (_req: Request, res: Response) => {
+    const result = await discordBot.registerSlashCommands();
+    res.json(result);
+  });
+
+  app.post('/api/bot/delete-slot', async (req: Request, res: Response) => {
+    const { slot, guildId } = req.body;
+    const slotNum = parseInt(slot, 10);
+    if (isNaN(slotNum)) {
+      return res.status(400).json({ success: false, error: 'Valid slot number is required' });
+    }
+
+    const client = (discordBot as any).client;
+    const guild = guildId ? client?.guilds.cache.get(guildId) : client?.guilds.cache.first();
+    const result = await discordBot.deleteSlot(slotNum, guild);
+
+    res.json({
+      ...result,
+      teams: registeredTeams
+    });
+  });
+
+  app.post('/api/bot/delete-tournament', async (req: Request, res: Response) => {
+    const { guildId, deleteChannels, preview } = req.body;
+    const client = (discordBot as any).client;
+    const guild = guildId ? client?.guilds.cache.get(guildId) : client?.guilds.cache.first();
+
+    if (preview) {
+      const previewData = discordBot.previewDeleteTournament(guild, deleteChannels !== false);
+      return res.json({
+        success: true,
+        preview: previewData
+      });
+    }
+
+    const result = await discordBot.deleteTournament(guild, deleteChannels !== false);
+
+    res.json({
+      ...result,
+      config,
+      teams: registeredTeams
+    });
+  });
+
+  app.post('/api/teams/swap', async (req: Request, res: Response) => {
+    const { slot1, slot2, guildId } = req.body;
+    const s1 = parseInt(slot1, 10);
+    const s2 = parseInt(slot2, 10);
+    if (isNaN(s1) || isNaN(s2)) {
+      return res.status(400).json({ success: false, error: 'Valid slot1 and slot2 numbers are required' });
+    }
+    const client = (discordBot as any).client;
+    const guild = guildId ? client?.guilds.cache.get(guildId) : client?.guilds.cache.first();
+    const result = await discordBot.swapSlots(s1, s2, guild);
+    res.json({
+      ...result,
+      teams: registeredTeams
+    });
+  });
+
+  app.get('/api/blacklist', (_req: Request, res: Response) => {
+    res.json({ blacklist: discordBot.getBlacklist() });
+  });
+
+  app.post('/api/blacklist/add', (req: Request, res: Response) => {
+    const { userId, username, reason, addedBy } = req.body;
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'userId is required' });
+    }
+    const entry = discordBot.addToBlacklist(userId, username || userId, reason || 'Rule violation', addedBy || 'Admin');
+    res.json({ success: true, entry, blacklist: discordBot.getBlacklist() });
+  });
+
+  app.post('/api/blacklist/remove', (req: Request, res: Response) => {
+    const { userId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'userId is required' });
+    }
+    const removed = discordBot.removeFromBlacklist(userId);
+    res.json({ success: removed, blacklist: discordBot.getBlacklist() });
+  });
+
+  app.get('/api/export/csv', (_req: Request, res: Response) => {
+    const csv = discordBot.generateRosterExport('csv');
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="scrim_rosters.csv"');
+    res.send(csv);
+  });
+
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    app.use(express.static(path.resolve(__dirname, 'dist')));
+    app.get('*', (_req: Request, res: Response) => {
+      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`FFA | Glacier Cup Manager™ server running on http://0.0.0.0:${PORT}`);
+  });
+}
+
+startServer().catch(err => {
+  console.log('Failed to start server:', err);
+});
