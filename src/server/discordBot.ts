@@ -726,7 +726,7 @@ class DiscordBotManager {
       return { roleName, categoryName, voiceChannelName, warnings };
     }
 
-    const botMember = guild.members.me;
+    const botMember = guild.members.me || (await guild.members.fetchMe().catch(() => null));
     const isAdmin = botMember?.permissions.has(PermissionsBitField.Flags.Administrator) ?? false;
     const canManageRoles = isAdmin || (botMember?.permissions.has(PermissionsBitField.Flags.ManageRoles) ?? false);
     const canManageChannels = isAdmin || (botMember?.permissions.has(PermissionsBitField.Flags.ManageChannels) ?? false);
@@ -930,76 +930,87 @@ class DiscordBotManager {
     const cleaned: string[] = [];
     if (!guild || !team) return cleaned;
 
+    await guild.channels.fetch().catch(() => {});
+    await guild.roles.fetch().catch(() => {});
+
     const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
     const protectedRoleNames = new Set(
       [
         '@everyone',
         'ffa bot manager',
-        (config?.managerRoleName || 'FFA Bot Manager').toLowerCase(),
-        (config?.verifiedRoleName || 'Verified Team').toLowerCase(),
-        (config?.roleName || 'Confirmed Slot').toLowerCase()
+        (config?.managerRoleName || 'FFA Bot Manager').trim().toLowerCase(),
+        (config?.verifiedRoleName || 'Verified Team').trim().toLowerCase(),
+        (config?.roleName || 'Confirmed Slot').trim().toLowerCase()
       ]
     );
 
-    const botMember = guild.members.me;
+    const botMember = guild.members.me || (await guild.members.fetchMe().catch(() => null));
     const isAdmin = botMember?.permissions.has(PermissionsBitField.Flags.Administrator) ?? false;
-    const canManageChannels = isAdmin || (botMember?.permissions.has(PermissionsBitField.Flags.ManageChannels) ?? false);
-    const canManageRoles = isAdmin || (botMember?.permissions.has(PermissionsBitField.Flags.ManageRoles) ?? false);
+    const botHighestRolePos = botMember?.roles?.highest?.position ?? 0;
 
-    if (canManageChannels) {
-      const targetCat = guild.channels.cache.find(
-        c =>
-          c.type === ChannelType.GuildCategory &&
-          ((team.teamCategoryId && c.id === team.teamCategoryId) ||
-            (team.teamCategoryName && c.name.toLowerCase() === team.teamCategoryName.toLowerCase()) ||
-            (team.teamName && c.name.toLowerCase() === team.teamName.toLowerCase()))
-      ) as CategoryChannel | undefined;
+    const cleanTeamName = (team.teamName || '').trim().toLowerCase();
+    const cleanVcName = (team.teamVoiceChannelName || '').trim().toLowerCase();
+    const cleanCatName = (team.teamCategoryName || '').trim().toLowerCase();
 
-      const targetVc = guild.channels.cache.find(
-        c =>
-          c.type === ChannelType.GuildVoice &&
-          ((team.teamVoiceChannelId && c.id === team.teamVoiceChannelId) ||
-            (targetCat && c.parentId === targetCat.id))
-      );
+    // 1. Voice channel deletion
+    const targetVc = guild.channels.cache.find(
+      c =>
+        c.type === ChannelType.GuildVoice &&
+        ((team.teamVoiceChannelId && c.id === team.teamVoiceChannelId) ||
+          (cleanVcName && (c.name.toLowerCase() === cleanVcName || c.name.toLowerCase() === `🔊 ${cleanVcName}` || c.name.toLowerCase().replace(/^🔊\s*/, '') === cleanVcName)) ||
+          (cleanTeamName && (c.name.toLowerCase() === cleanTeamName || c.name.toLowerCase() === `🔊 ${cleanTeamName}` || c.name.toLowerCase().replace(/^🔊\s*/, '') === cleanTeamName || c.name.toLowerCase().includes(cleanTeamName))))
+    );
 
-      if (targetVc) {
-        try {
-          const vcName = targetVc.name;
-          await targetVc.delete(`FFA-Manager cleanup for team ${team.teamName}`);
-          cleaned.push(`Voice: 🔊 ${vcName}`);
-        } catch {
-        }
-      }
-
-      if (targetCat) {
-        try {
-          const children = guild.channels.cache.filter(c => c.parentId === targetCat.id);
-          for (const [, child] of children) {
-            await child.delete(`FFA-Manager cleanup for team ${team.teamName}`).catch(() => {});
-          }
-          const catName = targetCat.name;
-          await targetCat.delete(`FFA-Manager cleanup for team ${team.teamName}`);
-          cleaned.push(`Category: ${catName}`);
-        } catch {
-        }
+    if (targetVc) {
+      try {
+        const vcName = targetVc.name;
+        await targetVc.delete(`FFA-Manager cleanup for team ${team.teamName}`);
+        cleaned.push(`Voice: 🔊 ${vcName}`);
+      } catch (err: any) {
+        console.warn(`[DiscordBot] Notice deleting team voice channel: ${err.message}`);
       }
     }
 
-    if (canManageRoles) {
-      const targetRole = guild.roles.cache.find(
-        r =>
-          !protectedRoleNames.has(r.name.toLowerCase()) &&
-          ((team.teamRoleId && r.id === team.teamRoleId) ||
-            (team.teamRoleName && r.name.toLowerCase() === team.teamRoleName.toLowerCase()) ||
-            (team.teamName && r.name.toLowerCase() === team.teamName.toLowerCase()))
-      );
-      if (targetRole) {
-        try {
-          const rName = targetRole.name;
-          await targetRole.delete(`FFA-Manager cleanup for team ${team.teamName}`);
-          cleaned.push(`Role: @${rName}`);
-        } catch {
+    // 2. Category deletion
+    const targetCat = guild.channels.cache.find(
+      c =>
+        c.type === ChannelType.GuildCategory &&
+        ((team.teamCategoryId && c.id === team.teamCategoryId) ||
+          (cleanCatName && c.name.toLowerCase() === cleanCatName) ||
+          (cleanTeamName && c.name.toLowerCase() === cleanTeamName))
+    ) as CategoryChannel | undefined;
+
+    if (targetCat) {
+      try {
+        const children = guild.channels.cache.filter(c => c.parentId === targetCat.id);
+        for (const [, child] of children) {
+          await child.delete(`FFA-Manager cleanup for team ${team.teamName}`).catch(() => {});
         }
+        const catName = targetCat.name;
+        await targetCat.delete(`FFA-Manager cleanup for team ${team.teamName}`);
+        cleaned.push(`Category: ${catName}`);
+      } catch (err: any) {
+        console.warn(`[DiscordBot] Notice deleting team category: ${err.message}`);
+      }
+    }
+
+    // 3. Team role deletion
+    const targetRole = guild.roles.cache.find(
+      r =>
+        !protectedRoleNames.has(r.name.toLowerCase()) &&
+        !r.managed &&
+        (isAdmin || r.position < botHighestRolePos) &&
+        ((team.teamRoleId && r.id === team.teamRoleId) ||
+          (team.teamRoleName && r.name.toLowerCase() === team.teamRoleName.toLowerCase()) ||
+          (cleanTeamName && (r.name.toLowerCase() === cleanTeamName || r.name.toLowerCase() === `@${cleanTeamName}`)))
+    );
+    if (targetRole) {
+      try {
+        const rName = targetRole.name;
+        await targetRole.delete(`FFA-Manager cleanup for team ${team.teamName}`);
+        cleaned.push(`Role: @${rName}`);
+      } catch (err: any) {
+        console.warn(`[DiscordBot] Notice deleting team role: ${err.message}`);
       }
     }
 
@@ -1830,22 +1841,43 @@ class DiscordBotManager {
             }
             const deleteChannels = interaction.customId.endsWith(':1');
             await interaction.update({
-              content: '⏳ **Deleting tournament channels and resetting rosters...**',
+              content: '⏳ **Deleting tournament category, voice channels, roles, channels, and resetting rosters...**',
               embeds: [],
               components: []
             });
             const result = await this.deleteTournament(interaction.guild || undefined, deleteChannels);
             const embed = new EmbedBuilder()
-              .setTitle('🗑️ Tournament Deleted & Roster Reset')
+              .setTitle('🗑️ Tournament Deleted & All Tournament Assets Removed')
               .setColor(0xED4245)
-              .setDescription(`The active tournament has been deleted by <@${interaction.user.id}>. All registered rosters and slots have been cleared.`)
+              .setDescription(`The active tournament has been deleted by <@${interaction.user.id}>. All categories, voice channels, text channels, and team roles have been removed from **${interaction.guild?.name || 'the server'}**.`)
               .addFields(
                 {
-                  name: 'Deleted Channels / Category',
-                  value: result.deletedChannels.length > 0 ? result.deletedChannels.join('\n') : '*(Channels retained; rosters reset)*',
+                  name: '📁 Deleted Categories',
+                  value: result.deletedCategories.length > 0 ? result.deletedCategories.slice(0, 10).join('\n') + (result.deletedCategories.length > 10 ? `\n...and ${result.deletedCategories.length - 10} more` : '') : '*(None)*',
+                  inline: true
+                },
+                {
+                  name: '🔊 Deleted Voice Channels',
+                  value: result.deletedVoiceChannels.length > 0 ? result.deletedVoiceChannels.slice(0, 10).join('\n') + (result.deletedVoiceChannels.length > 10 ? `\n...and ${result.deletedVoiceChannels.length - 10} more` : '') : '*(None)*',
+                  inline: true
+                },
+                {
+                  name: '🏷️ Deleted Roles',
+                  value: result.deletedRoles.length > 0 ? result.deletedRoles.slice(0, 10).join('\n') + (result.deletedRoles.length > 10 ? `\n...and ${result.deletedRoles.length - 10} more` : '') : '*(None)*',
+                  inline: true
+                },
+                {
+                  name: '💬 Deleted Text Channels',
+                  value: result.deletedTextChannels.length > 0 ? result.deletedTextChannels.join('\n') : '*(None)*',
+                  inline: false
+                },
+                {
+                  name: '👥 Cleared Rosters & Slots',
+                  value: `\`${result.clearedTeamsCount} Team(s) cleared\` • Tournament status set to CLOSED`,
                   inline: false
                 }
               )
+              .setFooter({ text: 'FFA | Glacier Cup Manager™ • Run /setup to launch a new tournament' })
               .setTimestamp();
             await interaction.editReply({ content: null, embeds: [embed], components: [] });
             return;
@@ -2758,19 +2790,17 @@ class DiscordBotManager {
       } else if (sub === 'tournament') {
         const confirmedArg = args[1]?.toLowerCase() === 'confirm';
         if (!confirmedArg) {
-          const preview = this.previewDeleteTournament(message.guild || undefined, true);
+          const preview = await this.previewDeleteTournament(message.guild || undefined, true);
           const previewEmbed = new EmbedBuilder()
             .setTitle('⚠️ Confirm Destructive Action — Delete Tournament')
             .setColor(0xFEE75C)
             .setDescription(`You are about to delete **${preview.title}** and reset all registered rosters. Please review what will be removed and confirm below:`)
             .addFields(
-              { name: 'Confirmed Teams to Clear', value: `\`${preview.confirmedCount} Team(s)\``, inline: true },
-              { name: 'Waitlist Teams to Clear', value: `\`${preview.waitlistCount} Team(s)\``, inline: true },
-              {
-                name: 'Channels & Category to Delete',
-                value: preview.channelsToDelete.length > 0 ? preview.channelsToDelete.join('\n') : '*(No matching tournament channels found — only rosters will be reset)*',
-                inline: false
-              }
+              { name: '👥 Rosters to Clear', value: `\`${preview.confirmedCount} Confirmed\` • \`${preview.waitlistCount} Waitlist\``, inline: true },
+              { name: '📁 Categories to Delete', value: preview.categoriesToDelete.length > 0 ? preview.categoriesToDelete.join('\n') : '*(None)*', inline: true },
+              { name: '🔊 Voice Channels to Delete', value: preview.voiceChannelsToDelete.length > 0 ? preview.voiceChannelsToDelete.slice(0, 8).join('\n') + (preview.voiceChannelsToDelete.length > 8 ? `\n...and ${preview.voiceChannelsToDelete.length - 8} more` : '') : '*(None)*', inline: false },
+              { name: '🏷️ Team Roles to Delete', value: preview.rolesToDelete.length > 0 ? preview.rolesToDelete.slice(0, 8).join('\n') + (preview.rolesToDelete.length > 8 ? `\n...and ${preview.rolesToDelete.length - 8} more` : '') : '*(None)*', inline: true },
+              { name: '💬 Text Channels to Delete', value: preview.textChannelsToDelete.length > 0 ? preview.textChannelsToDelete.join('\n') : '*(None)*', inline: true }
             )
             .setFooter({ text: 'Click Confirm below or run !delete tournament confirm' })
             .setTimestamp();
@@ -2783,16 +2813,37 @@ class DiscordBotManager {
 
         const result = await this.deleteTournament(message.guild || undefined, true);
         const embed = new EmbedBuilder()
-          .setTitle('🗑️ Tournament Deleted & Roster Reset')
+          .setTitle('🗑️ Tournament Deleted & All Tournament Assets Removed')
           .setColor(0xED4245)
-          .setDescription(`The active tournament has been deleted. All slots and registered rosters have been cleared.`)
+          .setDescription(`The active tournament has been deleted. All categories, voice channels, text channels, and team roles have been removed from **${message.guild?.name || 'the server'}**.`)
           .addFields(
             {
-              name: 'Deleted Channels / Categories',
-              value: result.deletedChannels.length > 0 ? result.deletedChannels.join('\n') : '*(No channels deleted)*',
+              name: '📁 Deleted Categories',
+              value: result.deletedCategories.length > 0 ? result.deletedCategories.slice(0, 10).join('\n') + (result.deletedCategories.length > 10 ? `\n...and ${result.deletedCategories.length - 10} more` : '') : '*(None)*',
+              inline: true
+            },
+            {
+              name: '🔊 Deleted Voice Channels',
+              value: result.deletedVoiceChannels.length > 0 ? result.deletedVoiceChannels.slice(0, 10).join('\n') + (result.deletedVoiceChannels.length > 10 ? `\n...and ${result.deletedVoiceChannels.length - 10} more` : '') : '*(None)*',
+              inline: true
+            },
+            {
+              name: '🏷️ Deleted Roles',
+              value: result.deletedRoles.length > 0 ? result.deletedRoles.slice(0, 10).join('\n') + (result.deletedRoles.length > 10 ? `\n...and ${result.deletedRoles.length - 10} more` : '') : '*(None)*',
+              inline: true
+            },
+            {
+              name: '💬 Deleted Text Channels',
+              value: result.deletedTextChannels.length > 0 ? result.deletedTextChannels.join('\n') : '*(None)*',
+              inline: false
+            },
+            {
+              name: '👥 Cleared Rosters & Slots',
+              value: `\`${result.clearedTeamsCount} Team(s) cleared\` • Tournament status set to CLOSED`,
               inline: false
             }
           )
+          .setFooter({ text: 'FFA | Glacier Cup Manager™ • Run /setup or !setup to create a new tournament' })
           .setTimestamp();
         return message.reply({ embeds: [embed] });
       } else {
@@ -3218,6 +3269,7 @@ class DiscordBotManager {
 
         if (config.autoCreateTeamVoice !== false) {
           await this.provisionTeamWorkspace(message.guild, newTeam, taggedUserIds);
+          if (this.onConfigUpdated) this.onConfigUpdated();
         }
       }
 
@@ -3622,6 +3674,7 @@ class DiscordBotManager {
 
         if (config.autoCreateTeamVoice !== false) {
           await this.provisionTeamWorkspace(interaction.guild, newTeam, taggedUserIds);
+          if (this.onConfigUpdated) this.onConfigUpdated();
         }
       }
 
@@ -4768,21 +4821,17 @@ class DiscordBotManager {
       const confirmed = interaction.options.getBoolean('confirm') ?? false;
 
       if (!confirmed) {
-        const preview = this.previewDeleteTournament(interaction.guild || undefined, deleteChannels);
+        const preview = await this.previewDeleteTournament(interaction.guild || undefined, deleteChannels);
         const previewEmbed = new EmbedBuilder()
           .setTitle('⚠️ Confirm Destructive Action — Delete Tournament')
           .setColor(0xFEE75C)
           .setDescription(`You are about to delete **${preview.title}** and reset all registered rosters. Please review what will be removed and confirm below:`)
           .addFields(
-            { name: 'Confirmed Teams to Clear', value: `\`${preview.confirmedCount} Team(s)\``, inline: true },
-            { name: 'Waitlist Teams to Clear', value: `\`${preview.waitlistCount} Team(s)\``, inline: true },
-            {
-              name: deleteChannels ? 'Channels & Category to Delete' : 'Channel Deletion Mode',
-              value: deleteChannels
-                ? (preview.channelsToDelete.length > 0 ? preview.channelsToDelete.join('\n') : '*(No matching tournament channels found — only rosters will be reset)*')
-                : '*(delete_channels: false — Channels will be kept; only rosters will be cleared)*',
-              inline: false
-            }
+            { name: '👥 Rosters to Clear', value: `\`${preview.confirmedCount} Confirmed\` • \`${preview.waitlistCount} Waitlist\``, inline: true },
+            { name: '📁 Categories to Delete', value: preview.categoriesToDelete.length > 0 ? preview.categoriesToDelete.join('\n') : '*(None)*', inline: true },
+            { name: '🔊 Voice Channels to Delete', value: preview.voiceChannelsToDelete.length > 0 ? preview.voiceChannelsToDelete.slice(0, 8).join('\n') + (preview.voiceChannelsToDelete.length > 8 ? `\n...and ${preview.voiceChannelsToDelete.length - 8} more` : '') : '*(None)*', inline: false },
+            { name: '🏷️ Team Roles to Delete', value: preview.rolesToDelete.length > 0 ? preview.rolesToDelete.slice(0, 8).join('\n') + (preview.rolesToDelete.length > 8 ? `\n...and ${preview.rolesToDelete.length - 8} more` : '') : '*(None)*', inline: true },
+            { name: '💬 Text Channels to Delete', value: preview.textChannelsToDelete.length > 0 ? preview.textChannelsToDelete.join('\n') : '*(None)*', inline: true }
           )
           .setFooter({ text: 'Click Confirm below to permanently execute this action' })
           .setTimestamp();
@@ -4797,19 +4846,39 @@ class DiscordBotManager {
 
       if (result.success) {
         const embed = new EmbedBuilder()
-          .setTitle('🗑️ Tournament Deleted & Roster Reset')
+          .setTitle('🗑️ Tournament Deleted & All Tournament Assets Removed')
           .setColor(0xED4245)
-          .setDescription(`The active tournament has been deleted by <@${interaction.user.id}>. All registered rosters and slots have been cleared.`)
+          .setDescription(`The active tournament has been deleted by <@${interaction.user.id}>. All categories, voice channels, text channels, and team roles have been removed from **${interaction.guild?.name || 'the server'}**.`)
           .addFields(
             {
-              name: 'Deleted Channels / Category',
-              value: result.deletedChannels.length > 0 ? result.deletedChannels.join('\n') : '*(Channels retained; rosters reset)*',
+              name: '📁 Deleted Categories',
+              value: result.deletedCategories.length > 0 ? result.deletedCategories.slice(0, 10).join('\n') + (result.deletedCategories.length > 10 ? `\n...and ${result.deletedCategories.length - 10} more` : '') : '*(None)*',
+              inline: true
+            },
+            {
+              name: '🔊 Deleted Voice Channels',
+              value: result.deletedVoiceChannels.length > 0 ? result.deletedVoiceChannels.slice(0, 10).join('\n') + (result.deletedVoiceChannels.length > 10 ? `\n...and ${result.deletedVoiceChannels.length - 10} more` : '') : '*(None)*',
+              inline: true
+            },
+            {
+              name: '🏷️ Deleted Roles',
+              value: result.deletedRoles.length > 0 ? result.deletedRoles.slice(0, 10).join('\n') + (result.deletedRoles.length > 10 ? `\n...and ${result.deletedRoles.length - 10} more` : '') : '*(None)*',
+              inline: true
+            },
+            {
+              name: '💬 Deleted Text Channels',
+              value: result.deletedTextChannels.length > 0 ? result.deletedTextChannels.join('\n') : '*(None)*',
               inline: false
             },
             {
-              name: 'Create Next Tournament',
-              value: 'Use `/setup` or `/create tournament` to launch a new tournament whenever you are ready.',
-              inline: false
+              name: '👥 Cleared Rosters & Slots',
+              value: `\`${result.clearedTeamsCount} Team(s) cleared\` • Tournament status set to CLOSED`,
+              inline: true
+            },
+            {
+              name: '🏆 Next Steps',
+              value: 'Run `/setup` or `/create tournament` to launch a new tournament whenever you are ready.',
+              inline: true
             }
           )
           .setFooter({ text: 'FFA | Glacier Cup Manager™' })
@@ -5374,23 +5443,30 @@ class DiscordBotManager {
     });
   }
 
-  public previewDeleteTournament(
-    guild?: Guild,
-    deleteChannels: boolean = true
-  ): {
-    title: string;
-    confirmedCount: number;
-    waitlistCount: number;
-    channelsToDelete: string[];
-  } {
-    const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
-    const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
-    const confirmedCount = teams.filter(t => !t.isWaitlist).length;
-    const waitlistCount = teams.filter(t => t.isWaitlist).length;
-    const channelsToDelete: string[] = [];
+  public async getTournamentGuildAssets(guild: Guild | undefined, teamsOverride?: any[]) {
+    if (!guild) {
+      return {
+        categories: [] as CategoryChannel[],
+        textChannels: [] as TextChannel[],
+        voiceChannels: [] as any[],
+        roles: [] as any[]
+      };
+    }
 
-    if (guild && deleteChannels) {
-      const targetChannelNames = [
+    // Refresh live channels, roles, and bot member from Discord API
+    await guild.channels.fetch().catch(() => {});
+    await guild.roles.fetch().catch(() => {});
+    const botMember = guild.members.me || (await guild.members.fetchMe().catch(() => null));
+
+    const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    const teams = teamsOverride || (this.getRegisteredTeams ? this.getRegisteredTeams() : []);
+
+    const botHighestRolePos = botMember?.roles?.highest?.position ?? 0;
+    const isBotAdmin = botMember?.permissions.has(PermissionsBitField.Flags.Administrator) ?? false;
+
+    // Standard tournament channel names
+    const standardChannelNames = new Set(
+      [
         '📋┃rules-format',
         'rules-format',
         '📝┃registration',
@@ -5402,25 +5478,315 @@ class DiscordBotManager {
         '🔒┃registration-details',
         '📋┃registration-details',
         'registration-details',
-        config?.regChannel,
-        config?.slotListChannel,
-        config?.idpChannel,
-        config?.regDetailsChannel,
-        config?.rulesChannel
-      ].filter(Boolean);
+        config?.regChannel?.toLowerCase(),
+        config?.slotListChannel?.toLowerCase(),
+        config?.idpChannel?.toLowerCase(),
+        config?.regDetailsChannel?.toLowerCase(),
+        config?.rulesChannel?.toLowerCase()
+      ].filter(Boolean).map(n => n!.toLowerCase().replace(/^#/, ''))
+    );
 
-      for (const [, channel] of guild.channels.cache) {
-        if (channel.isTextBased() && targetChannelNames.includes(channel.name)) {
-          channelsToDelete.push(`#${channel.name}`);
+    // Track known identifiers from registered teams
+    const teamCategoryIds = new Set<string>();
+    const teamVoiceIds = new Set<string>();
+    const teamRoleIds = new Set<string>();
+    const teamNames = new Set<string>();
+
+    for (const t of teams) {
+      if (t.teamCategoryId) teamCategoryIds.add(t.teamCategoryId);
+      if (t.teamVoiceChannelId) teamVoiceIds.add(t.teamVoiceChannelId);
+      if (t.teamRoleId) teamRoleIds.add(t.teamRoleId);
+      if (t.teamName) {
+        const clean = t.teamName.trim().toLowerCase();
+        teamNames.add(clean);
+        teamNames.add(clean.replace(/^🔊\s*/, ''));
+      }
+      if (t.teamCategoryName) {
+        const clean = t.teamCategoryName.trim().toLowerCase();
+        teamNames.add(clean);
+      }
+      if (t.teamRoleName) {
+        const clean = t.teamRoleName.trim().toLowerCase();
+        teamNames.add(clean);
+      }
+      if (t.teamVoiceChannelName) {
+        const clean = t.teamVoiceChannelName.trim().toLowerCase();
+        teamNames.add(clean);
+        teamNames.add(clean.replace(/^🔊\s*/, ''));
+      }
+    }
+
+    const categoriesToDelete = new Map<string, CategoryChannel>();
+    const voiceChannelsToDelete = new Map<string, any>();
+    const cfgCatName = (config?.categoryName || '').trim().toLowerCase();
+    const cfgTitle = (config?.title || '').trim().toLowerCase();
+
+    // 1. Identify Tournament Category & Team Categories
+    for (const [, ch] of guild.channels.cache) {
+      if (ch.type === ChannelType.GuildCategory) {
+        const cat = ch as CategoryChannel;
+        const nameLower = cat.name.trim().toLowerCase();
+
+        const isConfigCat = cfgCatName.length > 0 && (nameLower === cfgCatName || nameLower.includes(cfgCatName));
+        const isTitleCat = cfgTitle.length > 0 && (
+          nameLower.includes(cfgTitle) ||
+          nameLower === `🏆 ┃ ${cfgTitle}` ||
+          nameLower === `🏆 ┃ ${cfgTitle.toUpperCase()}`.toLowerCase()
+        );
+        const hasTrophyPrefix = cat.name.startsWith('🏆');
+        const hasTournamentKeyword = nameLower.includes('tournament') || nameLower.includes('scrim') || nameLower.includes('glacier');
+        const isTeamCatId = teamCategoryIds.has(cat.id);
+        const isTeamCatName = teamNames.has(nameLower);
+
+        // Check if any child of this category is a tournament channel
+        const hasTournamentChild = guild.channels.cache.some(
+          c => c.parentId === cat.id && standardChannelNames.has(c.name.toLowerCase().replace(/^#/, ''))
+        );
+
+        // Check if category has a child voice channel with matching name (exact team workspace pattern created by provisionTeamWorkspace)
+        const hasMatchingChildVoice = guild.channels.cache.some(
+          c => c.parentId === cat.id && c.type === ChannelType.GuildVoice && (
+            c.name.trim().toLowerCase() === nameLower ||
+            c.name.trim().toLowerCase() === `🔊 ${nameLower}` ||
+            c.name.trim().toLowerCase().replace(/^🔊\s*/, '') === nameLower
+          )
+        );
+
+        // Check if this category has private team voice channels inside
+        const hasPrivateTeamVoice = guild.channels.cache.some(
+          c => c.parentId === cat.id && c.type === ChannelType.GuildVoice && (
+            teamVoiceIds.has(c.id) ||
+            teamNames.has(c.name.trim().toLowerCase()) ||
+            teamNames.has(c.name.trim().toLowerCase().replace(/^🔊\s*/, '')) ||
+            c.name.includes('🔊') ||
+            c.permissionOverwrites?.cache?.some(
+              ow => ow.id === guild.roles.everyone.id && (
+                ow.deny.has(PermissionsBitField.Flags.ViewChannel) ||
+                ow.deny.has(PermissionsBitField.Flags.Connect)
+              )
+            )
+          )
+        );
+
+        // Check if category itself denies @everyone ViewChannel or Connect (team category pattern)
+        const catDeniesEveryone = cat.permissionOverwrites?.cache?.some(
+          ow => ow.id === guild.roles.everyone.id && (
+            ow.deny.has(PermissionsBitField.Flags.ViewChannel) ||
+            ow.deny.has(PermissionsBitField.Flags.Connect)
+          )
+        );
+        const catHasVoice = guild.channels.cache.some(c => c.parentId === cat.id && c.type === ChannelType.GuildVoice);
+
+        if (
+          isConfigCat ||
+          isTitleCat ||
+          hasTrophyPrefix ||
+          hasTournamentKeyword ||
+          isTeamCatId ||
+          isTeamCatName ||
+          hasTournamentChild ||
+          hasMatchingChildVoice ||
+          hasPrivateTeamVoice ||
+          (catDeniesEveryone && catHasVoice)
+        ) {
+          categoriesToDelete.set(cat.id, cat);
         }
       }
-      for (const [, channel] of guild.channels.cache) {
-        if (channel.type === ChannelType.GuildCategory) {
-          const catNameLower = channel.name.toLowerCase();
-          if (catNameLower.includes('tournament') || catNameLower.includes('scrim') || (config?.categoryName && channel.name === config.categoryName)) {
-            channelsToDelete.push(`Category: ${channel.name}`);
+    }
+
+    // 2. Identify Voice Channels (Team VCs & tournament VCs)
+    for (const [, ch] of guild.channels.cache) {
+      if (ch.type === ChannelType.GuildVoice) {
+        const nameLower = ch.name.trim().toLowerCase();
+        const cleanName = nameLower.replace(/^🔊\s*/, '');
+        const isTeamVoiceId = teamVoiceIds.has(ch.id);
+        const isInsideTournamentOrTeamCat = ch.parentId ? categoriesToDelete.has(ch.parentId) : false;
+        const matchesTeamName = teamNames.has(nameLower) || teamNames.has(cleanName);
+        const matchesSlotPattern = (/\[slot\s*\d+\].*/i).test(ch.name) || (/^slot\s*\d+/i).test(ch.name);
+
+        // Also check if channel denies @everyone ViewChannel/Connect (standard team VC pattern)
+        const deniesEveryone = ch.permissionOverwrites?.cache?.some(
+          ow => ow.id === guild.roles.everyone.id && (
+            ow.deny.has(PermissionsBitField.Flags.ViewChannel) ||
+            ow.deny.has(PermissionsBitField.Flags.Connect)
+          )
+        );
+
+        // Check if channel name matches its parent category
+        const parentCat = ch.parentId ? (guild.channels.cache.get(ch.parentId) as CategoryChannel | undefined) : undefined;
+        const matchesParentCatName = parentCat && (
+          nameLower === parentCat.name.trim().toLowerCase() ||
+          cleanName === parentCat.name.trim().toLowerCase()
+        );
+
+        if (
+          isTeamVoiceId ||
+          isInsideTournamentOrTeamCat ||
+          matchesTeamName ||
+          matchesParentCatName ||
+          matchesSlotPattern ||
+          (deniesEveryone && (ch.name.includes('🔊') || matchesParentCatName || Boolean(ch.parentId)))
+        ) {
+          voiceChannelsToDelete.set(ch.id, ch);
+          // If this voice channel is in a category not yet added, add its category as a team category
+          if (ch.parentId && !categoriesToDelete.has(ch.parentId)) {
+            const parent = guild.channels.cache.get(ch.parentId) as CategoryChannel | undefined;
+            if (parent && parent.type === ChannelType.GuildCategory) {
+              categoriesToDelete.set(parent.id, parent);
+            }
           }
         }
+      }
+    }
+
+    // 2b. Secondary pass: Any voice channel whose parent category is in categoriesToDelete
+    for (const [, ch] of guild.channels.cache) {
+      if (ch.type === ChannelType.GuildVoice && ch.parentId && categoriesToDelete.has(ch.parentId)) {
+        voiceChannelsToDelete.set(ch.id, ch);
+      }
+    }
+
+    // 3. Identify Text Channels
+    const textChannelsToDelete = new Map<string, TextChannel>();
+    for (const [, ch] of guild.channels.cache) {
+      if (ch.isTextBased() && ch.type === ChannelType.GuildText) {
+        const textCh = ch as TextChannel;
+        const nameLower = textCh.name.trim().toLowerCase();
+
+        const isStandard = standardChannelNames.has(nameLower);
+        const isInsideTournamentCat = textCh.parentId ? categoriesToDelete.has(textCh.parentId) : false;
+
+        if (isStandard || isInsideTournamentCat) {
+          textChannelsToDelete.set(textCh.id, textCh);
+        }
+      }
+    }
+
+    // 4. Identify Roles (Team Roles + Tournament Participant Roles)
+    const rolesToDelete = new Map<string, any>();
+    const protectedRoleNames = new Set([
+      '@everyone',
+      'ffa bot manager',
+      (config?.managerRoleName || 'FFA Bot Manager').trim().toLowerCase()
+    ]);
+
+    const verifiedRoleName = (config?.verifiedRoleName || 'Verified Team').trim().toLowerCase();
+    const slotRoleName = (config?.roleName || 'Confirmed Slot').trim().toLowerCase();
+
+    // Dynamically discover roles granted on team voice channels / categories
+    const dynamicallyDiscoveredRoleIds = new Set<string>();
+    for (const vc of voiceChannelsToDelete.values()) {
+      if (vc.permissionOverwrites?.cache) {
+        for (const [owId, ow] of vc.permissionOverwrites.cache) {
+          if (ow.type === 0 && owId !== guild.roles.everyone.id) { // Role overwrite
+            dynamicallyDiscoveredRoleIds.add(owId);
+          }
+        }
+      }
+    }
+    for (const cat of categoriesToDelete.values()) {
+      if (cat.permissionOverwrites?.cache) {
+        for (const [owId, ow] of cat.permissionOverwrites.cache) {
+          if (ow.type === 0 && owId !== guild.roles.everyone.id) { // Role overwrite
+            dynamicallyDiscoveredRoleIds.add(owId);
+          }
+        }
+      }
+    }
+
+    // Also collect category and voice channel names to match roles (since team roles are named identically to the team)
+    const targetAssetNames = new Set<string>();
+    for (const cat of categoriesToDelete.values()) {
+      const catLower = cat.name.trim().toLowerCase();
+      if (!catLower.includes('glacier') && !catLower.includes('tournament') && !catLower.includes('scrim') && !cat.name.startsWith('🏆')) {
+        targetAssetNames.add(catLower);
+      }
+    }
+    for (const vc of voiceChannelsToDelete.values()) {
+      const vcLower = vc.name.trim().toLowerCase().replace(/^🔊\s*/, '');
+      targetAssetNames.add(vcLower);
+    }
+
+    for (const [, r] of guild.roles.cache) {
+      const rNameLower = r.name.trim().toLowerCase();
+
+      // Skip protected roles: @everyone, staff manager role, Discord managed/integration roles
+      if (protectedRoleNames.has(rNameLower) || r.managed) {
+        continue;
+      }
+
+      // Role hierarchy check: bot cannot delete roles higher or equal to its own top role
+      if (!isBotAdmin && r.position >= botHighestRolePos) {
+        continue;
+      }
+
+      const isVerifiedRole = rNameLower === verifiedRoleName || rNameLower === 'verified team';
+      const isSlotRole = rNameLower === slotRoleName || rNameLower === 'confirmed slot';
+      const isTeamRoleId = teamRoleIds.has(r.id);
+      const isTeamName = teamNames.has(rNameLower);
+      const isOverwrittenRole = dynamicallyDiscoveredRoleIds.has(r.id);
+      const matchesAssetName = targetAssetNames.has(rNameLower);
+
+      if (isVerifiedRole || isSlotRole || isTeamRoleId || isTeamName || isOverwrittenRole || matchesAssetName) {
+        rolesToDelete.set(r.id, r);
+      }
+    }
+
+    return {
+      categories: Array.from(categoriesToDelete.values()),
+      textChannels: Array.from(textChannelsToDelete.values()),
+      voiceChannels: Array.from(voiceChannelsToDelete.values()),
+      roles: Array.from(rolesToDelete.values())
+    };
+  }
+
+  public async previewDeleteTournament(
+    guild?: Guild,
+    deleteChannels: boolean = true
+  ): Promise<{
+    title: string;
+    confirmedCount: number;
+    waitlistCount: number;
+    categoriesToDelete: string[];
+    voiceChannelsToDelete: string[];
+    textChannelsToDelete: string[];
+    rolesToDelete: string[];
+    channelsToDelete: string[];
+  }> {
+    const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+    const confirmedCount = teams.filter(t => !t.isWaitlist).length;
+    const waitlistCount = teams.filter(t => t.isWaitlist).length;
+
+    const categoriesToDelete: string[] = [];
+    const voiceChannelsToDelete: string[] = [];
+    const textChannelsToDelete: string[] = [];
+    const rolesToDelete: string[] = [];
+    const channelsToDelete: string[] = [];
+
+    if (guild && deleteChannels) {
+      const assets = await this.getTournamentGuildAssets(guild, teams);
+
+      for (const cat of assets.categories) {
+        const label = `📁 Category: ${cat.name}`;
+        categoriesToDelete.push(label);
+        channelsToDelete.push(label);
+      }
+
+      for (const vc of assets.voiceChannels) {
+        const label = `🔊 ${vc.name}`;
+        voiceChannelsToDelete.push(label);
+        channelsToDelete.push(label);
+      }
+
+      for (const ch of assets.textChannels) {
+        const label = `#${ch.name}`;
+        textChannelsToDelete.push(label);
+        channelsToDelete.push(label);
+      }
+
+      for (const r of assets.roles) {
+        rolesToDelete.push(`@${r.name}`);
       }
     }
 
@@ -5428,6 +5794,10 @@ class DiscordBotManager {
       title: config?.title || 'Active Tournament',
       confirmedCount,
       waitlistCount,
+      categoriesToDelete,
+      voiceChannelsToDelete,
+      textChannelsToDelete,
+      rolesToDelete,
       channelsToDelete
     };
   }
@@ -5435,10 +5805,23 @@ class DiscordBotManager {
   public async deleteTournament(
     guild?: Guild,
     deleteChannels: boolean = true
-  ): Promise<{ success: boolean; deletedChannels: string[]; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    deletedChannels: string[];
+    deletedCategories: string[];
+    deletedVoiceChannels: string[];
+    deletedTextChannels: string[];
+    deletedRoles: string[];
+    clearedTeamsCount: number;
+    error?: string;
+  }> {
     return this.withOperationLock(async () => {
       const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
       const deletedChannels: string[] = [];
+      const deletedCategories: string[] = [];
+      const deletedVoiceChannels: string[] = [];
+      const deletedTextChannels: string[] = [];
+      const deletedRoles: string[] = [];
 
       for (const timer of this.cleanupTimers) {
         clearTimeout(timer);
@@ -5447,81 +5830,117 @@ class DiscordBotManager {
 
       const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
       const teamsToClean = [...teams];
-      teams.length = 0;
-      this.slotListMessageIds.clear();
-      this.regDetailsMessageIds.clear();
+      const clearedTeamsCount = teamsToClean.length;
+
+      // Note: do NOT empty teams yet, so asset resolution can access full team metadata!
 
       if (config) {
         config.status = 'closed';
+        config.categoryName = '';
+        config.explicitlyStoppedOrPaused = true;
       }
 
       if (guild && deleteChannels) {
-        for (const t of teamsToClean) {
-          const cleaned = await this.cleanupTeamWorkspace(guild, t).catch(() => []);
-          deletedChannels.push(...cleaned);
+        // Gather all guild assets using teamsToClean metadata before clearing
+        const assets = await this.getTournamentGuildAssets(guild, teamsToClean);
+
+        // 1. Delete all voice channels first (team VCs & tournament VCs)
+        for (const vc of assets.voiceChannels) {
+          const vcName = vc.name;
+          try {
+            await vc.delete('FFA-Manager /delete tournament — clean tournament voice channel');
+            deletedVoiceChannels.push(`🔊 ${vcName}`);
+            deletedChannels.push(`🔊 ${vcName}`);
+          } catch (err: any) {
+            console.warn(`[DiscordBot] Notice deleting voice channel ${vcName}: ${err.message}`);
+          }
         }
-        const botMember = guild.members.me;
-        const canManageChannels = botMember?.permissions.has(PermissionsBitField.Flags.ManageChannels) ||
-                                  botMember?.permissions.has(PermissionsBitField.Flags.Administrator);
 
-        if (canManageChannels) {
-          const targetChannelNames = [
-            '📋┃rules-format',
-            'rules-format',
-            '📝┃registration',
-            'registration',
-            '📊┃slot-list',
-            'slot-list',
-            '🔑┃id-pass',
-            'id-pass',
-            '🔒┃registration-details',
-            '📋┃registration-details',
-            'registration-details',
-            config?.regChannel,
-            config?.slotListChannel,
-            config?.idpChannel,
-            config?.regDetailsChannel,
-            config?.rulesChannel
-          ].filter(Boolean);
+        // 2. Delete all text channels (#registration, #slot-list, #id-pass, #rules-format, #registration-details)
+        for (const ch of assets.textChannels) {
+          const chName = ch.name;
+          try {
+            await ch.delete('FFA-Manager /delete tournament — clean tournament text channel');
+            deletedTextChannels.push(`#${chName}`);
+            deletedChannels.push(`#${chName}`);
+          } catch (err: any) {
+            console.warn(`[DiscordBot] Notice deleting text channel #${chName}: ${err.message}`);
+          }
+        }
 
-          for (const [, channel] of guild.channels.cache) {
-            if (channel.isTextBased()) {
-              if (targetChannelNames.includes(channel.name)) {
-                const chName = channel.name;
-                try {
-                  await channel.delete('FFA-Manager /delete tournament command');
-                  deletedChannels.push(`#${chName}`);
-                } catch (err: any) {
-                  console.warn(`[DiscordBot] Could not delete channel #${chName}: ${err.message}`);
-                }
-              }
+        // 3. Delete any remaining child channels inside target categories before deleting categories
+        for (const cat of assets.categories) {
+          const remainingChildren = guild.channels.cache.filter(c => c.parentId === cat.id);
+          for (const [, child] of remainingChildren) {
+            try {
+              await child.delete('FFA-Manager /delete tournament — clean category child channel');
+            } catch {
             }
           }
 
-          for (const [, channel] of guild.channels.cache) {
-            if (channel.type === ChannelType.GuildCategory) {
-              const catNameLower = channel.name.toLowerCase();
-              if (catNameLower.includes('tournament') || catNameLower.includes('scrim')) {
-                const catName = channel.name;
-                try {
-                  await channel.delete('FFA-Manager /delete tournament command');
-                  deletedChannels.push(`Category: ${catName}`);
-                } catch (err: any) {
-                  console.warn(`[DiscordBot] Could not delete category ${catName}: ${err.message}`);
-                }
+          // 4. Delete the category itself (Tournament category & Team categories)
+          const catName = cat.name;
+          try {
+            await cat.delete('FFA-Manager /delete tournament — clean tournament category');
+            deletedCategories.push(`📁 Category: ${catName}`);
+            deletedChannels.push(`Category: ${catName}`);
+          } catch (err: any) {
+            console.warn(`[DiscordBot] Notice deleting category ${catName}: ${err.message}`);
+          }
+        }
+
+        // 5. Delete all team roles and tournament participant roles (@Verified Team, @Confirmed Slot)
+        for (const role of assets.roles) {
+          const roleName = role.name;
+          try {
+            await role.delete('FFA-Manager /delete tournament — clean tournament role');
+            deletedRoles.push(`@${roleName}`);
+          } catch (err: any) {
+            console.warn(`[DiscordBot] Notice deleting role @${roleName}: ${err.message}`);
+          }
+        }
+
+        // 6. Secondary fallback pass over individual registered team metadata in case of desynced references
+        for (const t of teamsToClean) {
+          try {
+            const fallbackCleaned = await this.cleanupTeamWorkspace(guild, t).catch(() => []);
+            for (const item of fallbackCleaned) {
+              if (!deletedChannels.includes(item)) {
+                deletedChannels.push(item);
+                if (item.startsWith('Category:')) deletedCategories.push(`📁 ${item}`);
+                else if (item.startsWith('Voice:')) deletedVoiceChannels.push(item.replace('Voice:', '').trim());
+                else if (item.startsWith('Role:')) deletedRoles.push(item.replace('Role:', '').trim());
               }
             }
+          } catch {
           }
         }
       }
+
+      // Now clear in-memory rosters and cache IDs
+      teams.length = 0;
+      this.slotListMessageIds.clear();
+      this.regDetailsMessageIds.clear();
 
       if (this.onTournamentDeleted) {
         this.onTournamentDeleted();
       }
 
-      this.logEvent('warn', `Tournament deleted and rosters reset! ${deletedChannels.length > 0 ? `Deleted: ${deletedChannels.join(', ')}` : 'Channels kept.'}`, guild?.name);
+      this.logEvent(
+        'warn',
+        `Tournament deleted and all assets removed! (Categories: ${deletedCategories.length}, Voice: ${deletedVoiceChannels.length}, Text: ${deletedTextChannels.length}, Roles: ${deletedRoles.length}, Teams cleared: ${clearedTeamsCount})`,
+        guild?.name
+      );
 
-      return { success: true, deletedChannels };
+      return {
+        success: true,
+        deletedChannels,
+        deletedCategories,
+        deletedVoiceChannels,
+        deletedTextChannels,
+        deletedRoles,
+        clearedTeamsCount
+      };
     });
   }
 

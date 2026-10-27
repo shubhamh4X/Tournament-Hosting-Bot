@@ -57,6 +57,9 @@ Create a `.env` file in the root directory (copied from `.env.example`) or confi
 | Variable | Required | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `DISCORD_TOKEN` | **Yes** (or `BOT_TOKEN`) | — | Your Discord Bot Token from the [Discord Developer Portal](https://discord.com/developers/applications) |
+| `TWILIO_ACCOUNT_SID` | **Yes** (for WhatsApp OTP) | — | Twilio Account SID (`AC...`) from [Twilio Console](https://console.twilio.com) |
+| `TWILIO_AUTH_TOKEN` | **Yes** (for WhatsApp OTP) | — | Twilio Auth Token from Twilio Console |
+| `TWILIO_VERIFY_SERVICE_SID` | **Yes** (for WhatsApp OTP) | — | Twilio Verify Service SID (`VA...`) with WhatsApp delivery channel enabled |
 | `PORT` | No | `3000` | HTTP server port for the web dashboard and health checks |
 | `HOST` | No | `0.0.0.0` | Network interface to bind the HTTP server |
 | `NODE_ENV` | No | `production` | Set to `production` in deployed environments to serve compiled static assets |
@@ -66,6 +69,47 @@ Create a `.env` file in the root directory (copied from `.env.example`) or confi
 > Under **Discord Developer Portal → Your Application → Bot → Privileged Gateway Intents**, enable:
 > 1. **Server Members Intent**
 > 2. **Message Content Intent**
+
+---
+
+## Real WhatsApp OTP Verification Setup (Twilio Verify)
+
+To verify tournament captains before allocating a slot, FFA | Glacier Cup Manager™ integrates directly with the **official WhatsApp Business Platform via Twilio Verify v2**.
+
+### 1. Twilio Console Configuration
+1. Sign up or log into [Twilio Console](https://console.twilio.com).
+2. Copy your **Account SID** and **Auth Token** into your `.env` file:
+   ```env
+   TWILIO_ACCOUNT_SID="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   TWILIO_AUTH_TOKEN="your_auth_token_here"
+   ```
+3. Navigate to **Explore Products → Verify → Services**.
+4. Click **Create Service** and give it a name (e.g. `Glacier-Cup-Verify`).
+5. Open the created service settings, go to **Channels**, and ensure the **WhatsApp** channel is toggled **ON**.
+6. Copy your **Verify Service SID** (`VA...`) into your `.env` file:
+   ```env
+   TWILIO_VERIFY_SERVICE_SID="VAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   ```
+
+### 2. WhatsApp Sender / Testing
+- **Development / Sandbox Testing:** In Twilio Console under **Messaging → Try it out → Send a WhatsApp message**, activate the Twilio WhatsApp Sandbox by sending the sandbox keyword (e.g., `join <keyword>`) from the test phone to Twilio's WhatsApp number.
+- **Production Deployment:** For high-volume production events, connect an approved **WhatsApp Business Profile (WABA)** or a Twilio-hosted WhatsApp sender number. Twilio Verify automatically dispatches localized authentication templates compliant with WhatsApp Business policies.
+
+### 3. Verification Workflow & Security Safeguards
+- **E.164 Number Normalization:** Client and server normalize numbers for India (`+91`), Bangladesh (`+880`), and Pakistan (`+92`).
+- **Throttling & Abuse Prevention:**
+  - 60-second cooldown between consecutive OTP requests for the same phone number.
+  - Maximum 5 OTP requests per phone number / hour.
+  - Maximum 5 code verification attempts before invalidating the session.
+- **Atomic Session Token Binding:**
+  - When Twilio Verify confirms the OTP (`status: 'approved'`), the server generates a cryptographically random, short-lived (15 min) verification token bound strictly to that phone number.
+  - During final team registration (`POST /api/register`), the server validates and atomically consumes the token.
+  - If the user edits the phone number or region, previous verification is invalidated immediately.
+- **API Endpoints:**
+  - `GET /api/whatsapp-otp/status`: Health check for Twilio Verify credentials.
+  - `POST /api/whatsapp-otp/send`: Initiates WhatsApp OTP delivery via Twilio Verify API.
+  - `POST /api/whatsapp-otp/verify`: Validates OTP code and issues a secure registration verification token.
+
 
 ---
 
@@ -98,7 +142,25 @@ NODE_ENV=production npm start
 npm run start:compiled
 ```
 
-### 2. Deploy on Railway or Render
+### 2. Deploy on EnderCloud (Node.js / Discord Bot Hosting)
+
+1. On your **EnderCloud Dashboard**, create or select your Node.js or Discord Bot server.
+2. In the **Startup** tab:
+   - Ensure the Node.js version is set to **Node.js 20 or Node.js 22**.
+   - Set the startup command to: `npm run start:compiled` (or `npm start` if running Node 22+).
+3. In the **Files** manager or Git integration:
+   - Push this repo to GitHub and connect it to EnderCloud, or upload the project files.
+   - Run in the EnderCloud console (or during build):
+     ```bash
+     npm install
+     npm run build
+     ```
+4. In the **Environment Variables / .env** tab:
+   - Add `DISCORD_TOKEN` = `<your_bot_token>`
+   - Add `PORT` = `<allocated_endercloud_port>` (or leave default if accessing port allocation)
+5. Start your server. The bot will automatically log into Discord and the web dashboard will be live at `http://<your-endercloud-ip>:<port>`.
+
+### 3. Deploy on Railway or Render
 
 1. Connect your GitHub repository to **Railway** or **Render** (Web Service).
 2. Configure the service settings:

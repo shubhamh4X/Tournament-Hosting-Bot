@@ -27,9 +27,10 @@ interface LiveBotRunnerProps {
   config: TournamentConfig;
   onRefreshTeams: () => void;
   onUpdateConfig?: (newConfig: Partial<TournamentConfig>) => void;
+  viewMode?: 'full' | 'gateway-only' | 'wizard-only';
 }
 
-export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshTeams, onUpdateConfig }) => {
+export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshTeams, onUpdateConfig, viewMode = 'full' }) => {
   const [botStatus, setBotStatus] = useState<BotStatus>({
     isOnline: false,
     isConnecting: false,
@@ -258,7 +259,8 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
   };
 
   return (
-    <div className="space-y-16 w-full">
+    <div className="space-y-16 w-full animate-fadeIn">
+      {viewMode !== 'wizard-only' && (
       <section className="p-6 sm:p-8 rounded-[24px] gateway-hero-panel space-y-6 relative overflow-hidden">
         <div className="pointer-events-none absolute -top-24 left-1/2 -translate-x-1/2 w-[640px] max-w-full h-[240px] rounded-full bg-[#38BDF8]/10 blur-[100px]" />
 
@@ -407,6 +409,7 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
           </div>
         )}
       </section>
+      )}
 
       {feedback && (
         <div
@@ -429,7 +432,7 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
         </div>
       )}
 
-      {botStatus.isOnline && (
+      {viewMode !== 'gateway-only' && (
         <section className="relative pt-4 space-y-8">
           <div className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 w-[680px] max-w-full h-[260px] rounded-full bg-gradient-to-b from-[#38BDF8]/10 via-[#0EA5E9]/5 to-transparent blur-[110px] -z-10" />
 
@@ -776,7 +779,7 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
         </section>
       )}
 
-      {botStatus.isOnline && (
+      {viewMode !== 'wizard-only' && botStatus.isOnline && (
         <section className="space-y-8">
           <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
             <div>
@@ -930,6 +933,7 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
         </section>
       )}
 
+      {viewMode === 'full' && (
       <section id="bot-commands-section" className="space-y-8 scroll-mt-24">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div>
@@ -1074,7 +1078,7 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
               <span className="text-[11px] text-white/40 font-mono">delete_channels (bool)</span>
             </div>
             <p className="text-xs text-white/55 leading-relaxed">
-              Deletes tournament channels and category, cleans up permissions, and resets all registered rosters.
+              Deletes tournament category, voice channels, text channels, team roles, and cleans up all registered rosters.
             </p>
           </div>
 
@@ -1089,7 +1093,9 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
           </div>
         </div>
       </section>
+      )}
 
+      {viewMode !== 'wizard-only' && (
       <section className="p-5 sm:p-6 rounded-[24px] esports-card space-y-5">
         <div className="flex items-center justify-between border-b border-white/[0.07] pb-4">
           <div className="flex items-center gap-3">
@@ -1143,6 +1149,7 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
           )}
         </div>
       </section>
+      )}
     </div>
   );
 };
