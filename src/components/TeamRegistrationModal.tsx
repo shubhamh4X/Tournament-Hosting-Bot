@@ -208,18 +208,21 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
   const currentCode = getRegionCountryCode(region);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/80 backdrop-blur-xs overflow-y-auto">
-      <div className="bg-[#14171D] border border-[#292F3A] rounded-2xl w-full max-w-xl overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-200 my-auto">
-        <div className="px-5 sm:px-6 py-4 border-b border-[#292F3A] flex items-center justify-between bg-[#101217]">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-[#191D25] border border-[#292F3A] flex items-center justify-center text-[#6685FF]">
-              <Users className="w-4 h-4" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/85 backdrop-blur-xl overflow-y-auto">
+      <div className="rounded-[28px] bg-[#080A0F]/95 border border-white/10 shadow-[0_24px_64px_rgba(0,0,0,0.85)] w-full max-w-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 my-auto">
+        <div className="px-6 sm:px-8 py-5 border-b border-white/[0.07] flex items-center justify-between">
+          <div className="flex items-center gap-3.5">
+            <div className="w-10 h-10 rounded-xl bg-[#0EA5E9]/10 border border-[#38BDF8]/25 flex items-center justify-center text-[#38BDF8]">
+              <Users className="w-4.5 h-4.5" />
             </div>
             <div>
-              <h2 className="font-display text-sm sm:text-base font-bold text-[#F3F5F9]">
+              <div className="eyebrow-label mb-0.5">
+                Direct Squad Entry
+              </div>
+              <h2 className="font-display text-base sm:text-lg font-bold text-white">
                 Register Your Team
               </h2>
-              <p className="text-[11px] text-[#929BAA]">
+              <p className="text-[11px] text-white/50">
                 {config.title || 'Tournament'} · {reqTags} Required Players ({config.format})
               </p>
             </div>
@@ -228,35 +231,35 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
           <button
             onClick={onClose}
             disabled={isSubmitting}
-            className="p-1.5 rounded-lg text-[#929BAA] hover:text-[#F3F5F9] hover:bg-[#191D25] transition-colors cursor-pointer disabled:opacity-50"
+            className="p-2 rounded-xl text-white/50 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer disabled:opacity-50"
             title="Close modal"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-5 sm:p-6 space-y-4 text-xs">
+        <form onSubmit={handleSubmit} className="p-6 sm:p-8 space-y-5 text-xs">
           {validationError && (
-            <div className="p-3 rounded-lg bg-[#FF626C]/10 border border-[#FF626C]/30 text-[#FF626C] flex items-start gap-2.5">
+            <div className="p-3.5 rounded-2xl bg-[#EF4444]/10 border border-[#EF4444]/25 text-[#F87171] flex items-start gap-2.5">
               <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
-              <div className="flex-1 text-[11px] font-medium leading-relaxed">
+              <div className="flex-1 text-xs font-medium leading-relaxed">
                 {validationError}
               </div>
             </div>
           )}
 
           {successMessage && (
-            <div className="p-3 rounded-lg bg-[#31D69A]/10 border border-[#31D69A]/30 text-[#31D69A] flex items-center gap-2.5">
+            <div className="p-3.5 rounded-2xl bg-[#10B981]/10 border border-[#10B981]/25 text-[#10B981] flex items-center gap-2.5">
               <CheckCircle2 className="w-4 h-4 shrink-0" />
-              <div className="flex-1 text-[11px] font-medium">
+              <div className="flex-1 text-xs font-medium">
                 {successMessage}
               </div>
             </div>
           )}
 
           <div>
-            <label className="block text-xs font-medium text-[#F3F5F9] mb-1.5">
-              Team Name: <span className="text-[#FF626C]">*</span>
+            <label className="block text-xs font-medium text-white/75 mb-2">
+              Team Name <span className="text-[#F87171]">*</span>
             </label>
             <input
               type="text"
@@ -264,19 +267,19 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
               onChange={e => setTeamName(e.target.value)}
               placeholder="e.g. Glacier Esports"
               disabled={isSubmitting}
-              className="w-full h-9 px-3 rounded-md bg-[#101319] border border-[#292F3A] text-[#F3F5F9] placeholder-[#707A89] focus:outline-hidden focus:border-[#6685FF] transition-colors"
+              className="w-full h-11 px-3.5 rounded-xl esports-input placeholder-white/35"
               required
             />
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-[#F3F5F9] mb-1.5 flex items-center justify-between">
+            <label className="block text-xs font-medium text-white/75 mb-2 flex items-center justify-between">
               <span className="flex items-center gap-1.5">
-                <Globe2 className="w-3.5 h-3.5 text-[#6685FF]" />
-                <span>Region:</span>
-                <span className="text-[#FF626C]">*</span>
+                <Globe2 className="w-3.5 h-3.5 text-[#38BDF8]" />
+                <span>Region</span>
+                <span className="text-[#F87171]">*</span>
               </span>
-              <span className="text-[10px] text-[#707A89] font-mono">
+              <span className="text-[11px] text-white/45 font-mono">
                 Auto-sets {currentCode} country code
               </span>
             </label>
@@ -284,11 +287,11 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
               value={region}
               onChange={e => handleRegionChange(e.target.value as TournamentRegion)}
               disabled={isSubmitting}
-              className="w-full h-9 px-3 rounded-md bg-[#101319] border border-[#292F3A] text-[#F3F5F9] text-xs font-medium focus:outline-hidden focus:border-[#6685FF] cursor-pointer"
+              className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-medium cursor-pointer"
               required
             >
               {VALID_TOURNAMENT_REGIONS.map(reg => (
-                <option key={reg} value={reg} className="bg-[#14171D] text-[#F3F5F9]">
+                <option key={reg} value={reg} className="bg-[#090C12] text-white">
                   {reg === 'India' ? '🇮🇳 India (+91)' : reg === 'Bangladesh' ? '🇧🇩 Bangladesh (+880)' : '🇵🇰 Pakistan (+92)'}
                 </option>
               ))}
@@ -296,10 +299,10 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-[#F3F5F9] mb-1.5 flex items-center gap-1">
-              <Phone className="w-3 h-3 text-[#31D69A]" />
-              <span>WhatsApp no :</span>
-              <span className="text-[#FF626C]">*</span>
+            <label className="block text-xs font-medium text-white/75 mb-2 flex items-center gap-1.5">
+              <Phone className="w-3.5 h-3.5 text-[#10B981]" />
+              <span>WhatsApp Number</span>
+              <span className="text-[#F87171]">*</span>
             </label>
             <input
               type="tel"
@@ -307,33 +310,33 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
               onChange={e => setWhatsappNumber1(e.target.value)}
               placeholder={`${currentCode} XXXXXXXXXX`}
               disabled={isSubmitting}
-              className="w-full h-9 px-3 rounded-md bg-[#101319] border border-[#292F3A] text-[#F3F5F9] font-mono text-[11px] placeholder-[#707A89] focus:outline-hidden focus:border-[#6685FF] transition-colors"
+              className="w-full h-11 px-3.5 rounded-xl esports-input font-mono text-xs placeholder-white/35"
               required
             />
-            <p className="text-[10px] text-[#707A89] mt-1 font-mono">
+            <p className="text-[11px] text-white/45 mt-1.5 font-mono">
               Country code ({currentCode}) automatically added for {region}
             </p>
           </div>
 
-          <div className="p-2.5 rounded-md bg-[#191D25] border border-[#292F3A] flex items-center gap-2 text-[11px] text-[#929BAA]">
-            <Info className="w-3.5 h-3.5 text-[#6685FF] shrink-0" />
+          <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/[0.08] flex items-center gap-3 text-xs text-white/55">
+            <Info className="w-4 h-4 text-[#38BDF8] shrink-0" />
             <span>Contact number remains confidential to tournament staff. Upon submit, all {reqTags} tagged players receive the Team Voice Channel Role to join VC.</span>
           </div>
 
-          <div className="space-y-2.5 pt-2 border-t border-[#292F3A]">
+          <div className="space-y-3 pt-3 border-t border-white/[0.07]">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-[#F3F5F9]">
-                Players Tags : ({reqTags} Players Required)
+              <span className="text-xs font-semibold text-white">
+                Player Tags ({reqTags} Players Required)
               </span>
-              <span className="text-[11px] font-mono text-[#A7C7FF]">
-                Exact {reqTags} tags (no extra players)
+              <span className="text-[11px] font-mono text-[#38BDF8]">
+                Exact {reqTags} tags
               </span>
             </div>
 
-            <div className="space-y-1.5">
+            <div className="space-y-2.5">
               {playerTags.slice(0, reqTags).map((tag, idx) => (
-                <div key={idx} className="flex items-center gap-2">
-                  <span className="w-24 text-[11px] font-mono text-[#707A89] shrink-0">
+                <div key={idx} className="flex items-center gap-3">
+                  <span className="w-24 text-[11px] font-mono text-white/50 shrink-0">
                     {idx === 0 ? 'Player 1 (IGL):' : `Player ${idx + 1}:`}
                   </span>
                   <input
@@ -342,7 +345,7 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
                     onChange={e => handlePlayerChange(idx, e.target.value)}
                     placeholder={`@Player${idx + 1} or Discord ID`}
                     disabled={isSubmitting}
-                    className="flex-1 h-8 px-3 rounded-md bg-[#101319] border border-[#292F3A] text-[#F3F5F9] text-xs placeholder-[#707A89] focus:outline-hidden focus:border-[#6685FF]"
+                    className="flex-1 h-10 px-3.5 rounded-xl esports-input text-xs placeholder-white/35"
                     required
                   />
                 </div>
@@ -350,12 +353,12 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
             </div>
           </div>
 
-          <div className="pt-4 border-t border-[#292F3A] flex items-center justify-end gap-2.5">
+          <div className="pt-5 border-t border-white/[0.07] flex items-center justify-end gap-3">
             <button
               type="button"
               onClick={onClose}
               disabled={isSubmitting}
-              className="h-9 px-4 rounded-md bg-[#191D25] hover:bg-[#222731] text-[#929BAA] hover:text-[#F3F5F9] text-xs font-semibold border border-[#292F3A] transition-colors cursor-pointer disabled:opacity-50"
+              className="btn-glacier-secondary h-10 px-5 rounded-xl text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
             >
               Cancel
             </button>
@@ -363,11 +366,11 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
             <button
               type="submit"
               disabled={isSubmitting}
-              className="h-9 px-5 rounded-md bg-[#6685FF] hover:bg-[#5473EE] text-[#F3F5F9] text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-md"
+              className="btn-glacier-primary h-10 px-6 rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer disabled:opacity-50"
             >
               {isSubmitting ? (
                 <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <Loader2 className="w-4 h-4 animate-spin" />
                   <span>Registering Team...</span>
                 </>
               ) : (
@@ -380,3 +383,4 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
     </div>
   );
 };
+

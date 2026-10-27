@@ -258,45 +258,53 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
   };
 
   return (
-    <div className="space-y-5 w-full">
-      <section className="p-5 sm:p-6 rounded-xl bg-[#14171D] border border-[#292F3A] space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-5">
-          <div className="flex items-start sm:items-center gap-4">
-            <img
-              src={botStatus.botUser?.avatar || '/assets/glacier-cup-logo.png'}
-              alt="FFA-Manager"
-              className="w-12 h-12 rounded-lg border border-[#292F3A] bg-[#191D25] object-cover shrink-0"
-              referrerPolicy="no-referrer"
-            />
+    <div className="space-y-16 w-full">
+      <section className="p-6 sm:p-8 rounded-[24px] gateway-hero-panel space-y-6 relative overflow-hidden">
+        <div className="pointer-events-none absolute -top-24 left-1/2 -translate-x-1/2 w-[640px] max-w-full h-[240px] rounded-full bg-[#38BDF8]/10 blur-[100px]" />
+
+        <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+          <div className="flex items-start sm:items-center gap-5">
+            <div className="relative shrink-0">
+              <div className="pointer-events-none absolute -inset-1.5 rounded-2xl bg-gradient-to-tr from-[#38BDF8]/35 to-[#0EA5E9]/20 opacity-80 blur-sm" />
+              <img
+                src={botStatus.botUser?.avatar || '/assets/glacier-cup-logo.png'}
+                alt="FFA-Manager"
+                className="relative w-14 h-14 sm:w-16 sm:h-16 rounded-2xl border border-white/15 bg-black object-cover shrink-0 shadow-lg"
+                referrerPolicy="no-referrer"
+              />
+            </div>
 
             <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2.5">
-                <h2 className="font-display text-base sm:text-lg font-bold text-[#F3F5F9] tracking-tight">
+              <div className="eyebrow-label mb-1.5">
+                Discord Gateway Connection
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2">
+                <h2 className="font-display text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
                   {botStatus.isOnline
                     ? botStatus.botUser?.tag || 'FFA-Manager'
                     : 'FFA-Manager Gateway'}
                 </h2>
 
                 <span
-                  className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono font-medium border ${
+                  className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[11px] font-mono font-semibold border ${
                     gatewayState === 'connected'
-                      ? 'bg-[#31D69A]/10 text-[#31D69A] border-[#31D69A]/30'
+                      ? 'bg-[#10B981]/10 text-[#10B981] border-[#10B981]/25'
                       : gatewayState === 'partially_operational'
-                      ? 'bg-[#F0B75A]/10 text-[#F0B75A] border-[#F0B75A]/30'
+                      ? 'bg-[#F59E0B]/10 text-[#F59E0B] border-[#F59E0B]/25'
                       : gatewayState === 'reconnecting'
-                      ? 'bg-[#6685FF]/15 text-[#A7C7FF] border-[#6685FF]/30'
-                      : 'bg-[#191D25] text-[#929BAA] border-[#292F3A]'
+                      ? 'bg-[#38BDF8]/12 text-[#7DD3FC] border-[#38BDF8]/30'
+                      : 'bg-white/[0.03] text-white/50 border-white/10'
                   }`}
                 >
                   <span
                     className={`w-1.5 h-1.5 rounded-full ${
                       gatewayState === 'connected'
-                        ? 'bg-[#31D69A]'
+                        ? 'bg-[#10B981] shadow-[0_0_8px_#10B981]'
                         : gatewayState === 'partially_operational'
-                        ? 'bg-[#F0B75A]'
+                        ? 'bg-[#F59E0B]'
                         : gatewayState === 'reconnecting'
-                        ? 'bg-[#6685FF] animate-pulse'
-                        : 'bg-[#707A89]'
+                        ? 'bg-[#38BDF8] animate-pulse'
+                        : 'bg-white/40'
                     }`}
                   />
                   {gatewayState === 'connected'
@@ -309,34 +317,36 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
                 </span>
 
                 {botStatus.isOnline && typeof botStatus.wsPing === 'number' && botStatus.wsPing >= 0 && (
-                  <span className="text-[11px] font-mono tabular-nums px-2 py-0.5 rounded bg-[#101319] text-[#A7C7FF] border border-[#292F3A]">
-                    Ping: {botStatus.wsPing}ms
+                  <span className="text-xs font-mono tabular-nums text-[#7DD3FC] flex items-center gap-1.5">
+                    <span className="text-white/25" aria-hidden="true">·</span>
+                    <span>{botStatus.wsPing}ms</span>
                   </span>
                 )}
 
                 {botStatus.isOnline && typeof botStatus.uptimeSeconds === 'number' && botStatus.uptimeSeconds > 0 && (
-                  <span className="text-[11px] font-mono tabular-nums px-2 py-0.5 rounded bg-[#101319] text-[#929BAA] border border-[#292F3A]">
-                    Uptime: {formatUptime(botStatus.uptimeSeconds)}
+                  <span className="text-xs font-mono tabular-nums text-white/60 flex items-center gap-1.5">
+                    <span className="text-white/25" aria-hidden="true">·</span>
+                    <span>Uptime {formatUptime(botStatus.uptimeSeconds)}</span>
                   </span>
                 )}
               </div>
 
-              <p className="text-xs text-[#929BAA] mt-1.5 leading-relaxed">
+              <p className="text-xs sm:text-sm text-white/60 mt-2.5 leading-relaxed max-w-4xl">
                 {botStatus.isOnline
                   ? `Active in ${botStatus.guilds?.length || 0} Discord server(s) · Listening for tag-basis registrations in #${config.regChannel} · EasyTag: ${config.easyTagEnabled ? 'Active' : 'Disabled'}`
-                  : 'Connect your bot to listen to registrations from your Discord community server in real-time.'}
+                  : 'Connect your bot instance to listen to tournament registrations from your Discord community server in real-time.'}
               </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
             {!botStatus.isOnline ? (
               <button
                 onClick={handleConnectBot}
                 disabled={isLoading || botStatus.isConnecting}
-                className="h-9 px-4 rounded-md bg-[#31D69A] hover:bg-[#28BD86] text-[#0A0B0E] text-xs font-semibold transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                className="btn-glacier-primary h-11 px-6 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
               >
-                <Power className="w-3.5 h-3.5" />
+                <Power className="w-4 h-4" />
                 <span>{isLoading || botStatus.isConnecting ? 'Connecting to Bot...' : 'Connect to Bot'}</span>
               </button>
             ) : (
@@ -344,16 +354,16 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
                 <button
                   onClick={handleConnectBot}
                   disabled={isLoading}
-                  className="h-9 px-3.5 rounded-md bg-[#31D69A]/15 hover:bg-[#31D69A]/25 text-[#31D69A] border border-[#31D69A]/30 text-xs font-semibold transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                  className="btn-glacier-secondary h-10 px-4 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
                   title="Reconnect or refresh Discord Bot Gateway session"
                 >
-                  <Power className="w-3.5 h-3.5" />
-                  <span>{isLoading ? 'Connecting...' : 'Connect to Bot'}</span>
+                  <Power className="w-3.5 h-3.5 text-[#10B981]" />
+                  <span>{isLoading ? 'Connecting...' : 'Refresh Session'}</span>
                 </button>
                 <button
                   onClick={handleStopBot}
                   disabled={isLoading}
-                  className="h-9 px-3.5 rounded-md bg-[#FF626C]/10 hover:bg-[#FF626C]/20 text-[#FF626C] border border-[#FF626C]/30 text-xs font-semibold transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                  className="h-10 px-4 rounded-xl bg-[#EF4444]/10 hover:bg-[#EF4444]/20 text-[#F87171] border border-[#EF4444]/25 text-xs font-semibold transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
                 >
                   <Power className="w-3.5 h-3.5" />
                   <span>Disconnect Bot</span>
@@ -364,32 +374,32 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
         </div>
 
         {!botStatus.isOnline && (
-          <div className="pt-3 border-t border-[#292F3A] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          <div className="relative pt-6 border-t border-white/[0.07] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
             <input
               type="password"
               value={tokenInput}
               onChange={e => setTokenInput(e.target.value)}
               placeholder="Optional: Paste custom Discord Bot Token (leave blank to use default configured bot)"
-              className="flex-1 h-9 px-3 rounded-md bg-[#101319] border border-[#292F3A] text-[#F3F5F9] text-xs placeholder-[#707A89] focus:outline-hidden focus:border-[#6685FF] font-mono"
+              className="flex-1 h-11 px-4 rounded-xl esports-input text-xs placeholder-white/35 font-mono"
             />
             <button
               onClick={handleConnectBot}
               disabled={isLoading || botStatus.isConnecting}
-              className="h-9 px-4 rounded-md bg-[#6685FF] hover:bg-[#5473EE] text-[#F3F5F9] text-xs font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+              className="btn-glacier-primary h-11 px-6 rounded-xl text-xs font-bold flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 whitespace-nowrap"
             >
               <Power className="w-3.5 h-3.5" />
-              <span>{isLoading || botStatus.isConnecting ? 'Connecting...' : 'Connect to Bot'}</span>
+              <span>{isLoading || botStatus.isConnecting ? 'Connecting...' : 'Launch Gateway'}</span>
             </button>
           </div>
         )}
 
         {gatewayState === 'partially_operational' && botStatus.degradedReasons && botStatus.degradedReasons.length > 0 && (
-          <div className="p-3.5 rounded-lg bg-[#F0B75A]/10 border border-[#F0B75A]/30 text-xs space-y-1.5">
-            <div className="flex items-center gap-2 font-semibold text-[#F0B75A]">
+          <div className="p-4 rounded-2xl bg-[#F59E0B]/[0.07] border border-[#F59E0B]/25 text-xs space-y-1.5">
+            <div className="flex items-center gap-2 font-semibold text-[#F59E0B]">
               <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>Gateway Partially Operational — Telemetry Diagnostics</span>
+              <span>Gateway Partially Operational — Diagnostics</span>
             </div>
-            <ul className="list-disc list-inside text-[11px] text-[#F3F5F9] space-y-0.5 font-mono">
+            <ul className="list-disc list-inside text-[11px] text-white/80 space-y-0.5 font-mono">
               {botStatus.degradedReasons.map((reason, idx) => (
                 <li key={idx}>{reason}</li>
               ))}
@@ -400,351 +410,380 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
 
       {feedback && (
         <div
-          className={`px-4 py-3 rounded-lg border flex items-center gap-3 text-xs font-medium ${
+          className={`px-5 py-4 rounded-2xl border flex items-center gap-3 text-xs font-medium backdrop-blur-md ${
             feedback.type === 'success'
-              ? 'bg-[#31D69A]/10 border-[#31D69A]/30 text-[#31D69A]'
+              ? 'bg-[#10B981]/[0.08] border-[#10B981]/30 text-[#10B981]'
               : feedback.type === 'error'
-              ? 'bg-[#FF626C]/10 border-[#FF626C]/30 text-[#FF626C]'
-              : 'bg-[#6685FF]/10 border-[#6685FF]/30 text-[#A7C7FF]'
+              ? 'bg-[#EF4444]/[0.08] border-[#EF4444]/30 text-[#F87171]'
+              : 'bg-[#38BDF8]/[0.08] border-[#38BDF8]/30 text-[#7DD3FC]'
           }`}
         >
           {feedback.type === 'success' ? (
-            <CheckCircle2 className="w-4 h-4 shrink-0 text-[#31D69A]" />
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-[#10B981]" />
           ) : feedback.type === 'error' ? (
-            <AlertCircle className="w-4 h-4 shrink-0 text-[#FF626C]" />
+            <AlertCircle className="w-4 h-4 shrink-0 text-[#F87171]" />
           ) : (
-            <Info className="w-4 h-4 shrink-0 text-[#6685FF]" />
+            <Info className="w-4 h-4 shrink-0 text-[#38BDF8]" />
           )}
-          <span className="text-[#F3F5F9]">{feedback.message}</span>
+          <span className="text-white/90">{feedback.message}</span>
         </div>
       )}
 
       {botStatus.isOnline && (
-        <section className="p-5 sm:p-6 rounded-xl bg-[#14171D] border border-[#292F3A] space-y-5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#292F3A] pb-4">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-md bg-[#191D25] border border-[#292F3A] flex items-center justify-center text-[#6685FF] shrink-0">
-                <Trophy className="w-4 h-4" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="font-display text-base font-bold text-[#F3F5F9]">
-                    Tournament Setup Wizard
-                  </h3>
-                  <code className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-[#191D25] text-[#A7C7FF] border border-[#292F3A]">
-                    !setup
-                  </code>
-                </div>
-                <p className="text-xs text-[#929BAA] mt-0.5">
-                  Configures slots, tags, and groups, then automatically provisions Discord category, channels (#rules, #registration, #slot-list, #id-pass), and verified team roles.
-                </p>
-              </div>
-            </div>
+        <section className="relative pt-4 space-y-8">
+          <div className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 w-[680px] max-w-full h-[260px] rounded-full bg-gradient-to-b from-[#38BDF8]/10 via-[#0EA5E9]/5 to-transparent blur-[110px] -z-10" />
 
-            <button
-              type="button"
-              onClick={() => setShowWizard(!showWizard)}
-              className="h-8 px-3 rounded-md bg-[#191D25] hover:bg-[#222731] text-[#929BAA] hover:text-[#F3F5F9] text-xs font-medium border border-[#292F3A] transition-colors cursor-pointer self-start sm:self-auto whitespace-nowrap"
-            >
-              {showWizard ? 'Hide Wizard' : 'Show Wizard'}
-            </button>
+          <div className="text-center max-w-2xl mx-auto space-y-3">
+            <div className="eyebrow-label">
+              Automated Server Provisioning
+            </div>
+            <h3 className="font-display text-2xl sm:text-4xl font-extrabold text-white tracking-tight text-balance">
+              Tournament Setup Wizard
+            </h3>
+            <p className="text-xs sm:text-sm text-white/60 leading-relaxed max-w-xl mx-auto">
+              Configure slots, player tags, and group structure, or run <code className="text-[#7DD3FC] font-mono bg-white/[0.04] px-2 py-0.5 rounded-md border border-white/[0.08]">!setup</code> in Discord to automatically provision categories, channels, and verified roles.
+            </p>
           </div>
 
-          {showWizard && (
-            <form onSubmit={handleRunSetupWizard} className="space-y-5">
-              <div>
-                <div className="text-xs font-medium text-[#929BAA] mb-2">
-                  Quick Tournament Presets
+          <div className="p-6 sm:p-8 rounded-[24px] esports-card space-y-7">
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/[0.07] pb-5">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-[#0EA5E9]/10 border border-[#38BDF8]/25 flex items-center justify-center text-[#7DD3FC] shrink-0">
+                  <Trophy className="w-4 h-4" />
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() => applyPreset(20, 4, 20, 'Glacier Cup Squads')}
-                    className="p-3 rounded-md bg-[#191D25] hover:bg-[#1E232D] border border-[#292F3A] hover:border-[#6685FF]/60 text-left transition-colors cursor-pointer group"
-                  >
-                    <div className="text-xs font-semibold text-[#F3F5F9] group-hover:text-[#A7C7FF]">
-                      Squad Scrims
-                    </div>
-                    <div className="text-[11px] font-mono tabular-nums text-[#707A89] mt-1">
-                      20 Slots · 4 Tags · 20/Grp
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => applyPreset(48, 4, 12, 'Championship Series — 4 Groups')}
-                    className="p-3 rounded-md bg-[#191D25] hover:bg-[#1E232D] border border-[#292F3A] hover:border-[#6685FF]/60 text-left transition-colors cursor-pointer group"
-                  >
-                    <div className="text-xs font-semibold text-[#F3F5F9] group-hover:text-[#A7C7FF]">
-                      48-Slot Major
-                    </div>
-                    <div className="text-[11px] font-mono tabular-nums text-[#707A89] mt-1">
-                      48 Slots · 4 Tags · 12/Grp
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => applyPreset(100, 4, 20, '100-Team Qualifier')}
-                    className="p-3 rounded-md bg-[#191D25] hover:bg-[#1E232D] border border-[#292F3A] hover:border-[#6685FF]/60 text-left transition-colors cursor-pointer group"
-                  >
-                    <div className="text-xs font-semibold text-[#F3F5F9] group-hover:text-[#A7C7FF]">
-                      100-Slot Qualifier
-                    </div>
-                    <div className="text-[11px] font-mono tabular-nums text-[#707A89] mt-1">
-                      100 Slots · 4 Tags · 20/Grp
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => applyPreset(500, 4, 25, '500-Slot Open Cup')}
-                    className="p-3 rounded-md bg-[#191D25] hover:bg-[#1E232D] border border-[#292F3A] hover:border-[#6685FF]/60 text-left transition-colors cursor-pointer group"
-                  >
-                    <div className="text-xs font-semibold text-[#F3F5F9] group-hover:text-[#A7C7FF]">
-                      500-Slot Open Cup
-                    </div>
-                    <div className="text-[11px] font-mono tabular-nums text-[#707A89] mt-1">
-                      500 Slots · 4 Tags · 25/Grp
-                    </div>
-                  </button>
+                <div>
+                  <span className="font-display text-base sm:text-lg font-bold text-white block">
+                    Instant Tournament Presets &amp; Parameters
+                  </span>
+                  <span className="text-xs text-white/45">
+                    Select a competitive template or customize slot and group counts below
+                  </span>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <button
+                type="button"
+                onClick={() => setShowWizard(!showWizard)}
+                className="btn-glacier-secondary h-9 px-4 rounded-xl text-xs font-semibold cursor-pointer whitespace-nowrap"
+              >
+                {showWizard ? 'Minimize' : 'Expand Wizard'}
+              </button>
+            </div>
+
+            {showWizard && (
+              <form onSubmit={handleRunSetupWizard} className="space-y-7">
                 <div>
-                  <label className="block text-xs font-medium text-[#929BAA] mb-1.5">
-                    Target Discord Server
-                  </label>
-                  <select
-                    value={wizardGuildId || (botStatus.guilds[0]?.id ?? '')}
-                    onChange={e => setWizardGuildId(e.target.value)}
-                    className="w-full h-9 px-3 rounded-md bg-[#101319] border border-[#292F3A] text-[#F3F5F9] text-xs font-medium focus:outline-hidden focus:border-[#6685FF] cursor-pointer"
-                  >
-                    {botStatus.guilds.map(g => (
-                      <option key={g.id} value={g.id}>
-                        {g.name} ({g.memberCount} members)
-                      </option>
-                    ))}
-                  </select>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/50 mb-3.5">
+                    Select Format Preset
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                    <button
+                      type="button"
+                      onClick={() => applyPreset(20, 4, 20, 'Glacier Cup Squads')}
+                      className={`p-4 rounded-2xl text-left cursor-pointer group transition-all border ${
+                        wizardSlots === 20 && wizardGroups === 20
+                          ? 'bg-[#0EA5E9]/[0.09] border-[#38BDF8]/40 shadow-[inset_0_1px_0_rgba(186,230,253,0.12)]'
+                          : 'esports-card-sub'
+                      }`}
+                    >
+                      <div className="font-display text-sm font-bold text-white group-hover:text-[#7DD3FC] transition-colors">
+                        Squad Scrims
+                      </div>
+                      <div className="text-xs font-mono tabular-nums text-white/50 mt-1">
+                        20 Slots · 4 Tags · 20/Grp
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => applyPreset(48, 4, 12, 'Championship Series — 4 Groups')}
+                      className={`p-4 rounded-2xl text-left cursor-pointer group transition-all border ${
+                        wizardSlots === 48 && wizardGroups === 12
+                          ? 'bg-[#0EA5E9]/[0.09] border-[#38BDF8]/40 shadow-[inset_0_1px_0_rgba(186,230,253,0.12)]'
+                          : 'esports-card-sub'
+                      }`}
+                    >
+                      <div className="font-display text-sm font-bold text-white group-hover:text-[#7DD3FC] transition-colors">
+                        48-Slot Major
+                      </div>
+                      <div className="text-xs font-mono tabular-nums text-white/50 mt-1">
+                        48 Slots · 4 Tags · 12/Grp
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => applyPreset(100, 4, 20, '100-Team Qualifier')}
+                      className={`p-4 rounded-2xl text-left cursor-pointer group transition-all border ${
+                        wizardSlots === 100 && wizardGroups === 20
+                          ? 'bg-[#0EA5E9]/[0.09] border-[#38BDF8]/40 shadow-[inset_0_1px_0_rgba(186,230,253,0.12)]'
+                          : 'esports-card-sub'
+                      }`}
+                    >
+                      <div className="font-display text-sm font-bold text-white group-hover:text-[#7DD3FC] transition-colors">
+                        100-Slot Qualifier
+                      </div>
+                      <div className="text-xs font-mono tabular-nums text-white/50 mt-1">
+                        100 Slots · 4 Tags · 20/Grp
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => applyPreset(500, 4, 25, '500-Slot Open Cup')}
+                      className={`p-4 rounded-2xl text-left cursor-pointer group transition-all border ${
+                        wizardSlots === 500 && wizardGroups === 25
+                          ? 'bg-[#0EA5E9]/[0.09] border-[#38BDF8]/40 shadow-[inset_0_1px_0_rgba(186,230,253,0.12)]'
+                          : 'esports-card-sub'
+                      }`}
+                    >
+                      <div className="font-display text-sm font-bold text-white group-hover:text-[#7DD3FC] transition-colors">
+                        500-Slot Open Cup
+                      </div>
+                      <div className="text-xs font-mono tabular-nums text-white/50 mt-1">
+                        500 Slots · 4 Tags · 25/Grp
+                      </div>
+                    </button>
+                  </div>
                 </div>
 
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-medium text-[#929BAA] mb-1.5">
-                    Tournament / Scrim Title
-                  </label>
-                  <input
-                    type="text"
-                    value={wizardTitle}
-                    onChange={e => setWizardTitle(e.target.value)}
-                    placeholder="e.g. Glacier Cup Season 1"
-                    className="w-full h-9 px-3 rounded-md bg-[#101319] border border-[#292F3A] text-[#F3F5F9] text-xs placeholder-[#707A89] focus:outline-hidden focus:border-[#6685FF]"
-                    required
-                  />
-                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                  <div>
+                    <label className="block text-xs font-medium text-white/75 mb-2">
+                      Target Discord Server
+                    </label>
+                    <select
+                      value={wizardGuildId || (botStatus.guilds[0]?.id ?? '')}
+                      onChange={e => setWizardGuildId(e.target.value)}
+                      className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-medium cursor-pointer"
+                    >
+                      {botStatus.guilds.map(g => (
+                        <option key={g.id} value={g.id} className="bg-[#090C12] text-white">
+                          {g.name} ({g.memberCount} members)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-                <div>
-                  <label className="block text-xs font-medium text-[#929BAA] mb-1.5">
-                    Total Slots (2–500)
-                  </label>
-                  <div className="flex items-center gap-1.5">
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-medium text-white/75 mb-2">
+                      Tournament / Scrim Title
+                    </label>
                     <input
-                      type="number"
-                      min="2"
-                      max="500"
-                      value={wizardSlots}
-                      onChange={e => setWizardSlots(Math.max(2, Math.min(500, parseInt(e.target.value, 10) || 20)))}
-                      className="w-full h-9 px-3 rounded-md bg-[#101319] border border-[#292F3A] text-[#F3F5F9] text-xs font-mono tabular-nums focus:outline-hidden focus:border-[#6685FF]"
+                      type="text"
+                      value={wizardTitle}
+                      onChange={e => setWizardTitle(e.target.value)}
+                      placeholder="e.g. Glacier Cup Season 1"
+                      className="w-full h-11 px-3.5 rounded-xl esports-input text-xs placeholder-white/35"
                       required
                     />
-                    <div className="flex gap-1 shrink-0">
-                      {[20, 48, 100, 500].map(sl => (
-                        <button
-                          key={sl}
-                          type="button"
-                          onClick={() => setWizardSlots(sl)}
-                          className={`h-9 px-2 rounded-md border text-[11px] font-mono tabular-nums transition-colors cursor-pointer ${
-                            wizardSlots === sl
-                              ? 'bg-[#6685FF]/20 border-[#6685FF] text-[#A7C7FF]'
-                              : 'bg-[#191D25] border-[#292F3A] text-[#929BAA] hover:text-[#F3F5F9]'
-                          }`}
-                        >
-                          {sl}
-                        </button>
-                      ))}
-                    </div>
                   </div>
-                </div>
 
-                <div>
-                  <label className="block text-xs font-medium text-[#929BAA] mb-1.5">
-                    Required Tags / Team
-                  </label>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type="number"
-                      min="1"
-                      max="6"
-                      value={wizardTags}
-                      onChange={e => setWizardTags(parseInt(e.target.value, 10) || 4)}
-                      className="w-full h-9 px-3 rounded-md bg-[#101319] border border-[#292F3A] text-[#F3F5F9] text-xs font-mono tabular-nums focus:outline-hidden focus:border-[#6685FF]"
-                      required
-                    />
-                    <div className="flex gap-1 shrink-0">
-                      {[2, 3, 4].map(tg => (
-                        <button
-                          key={tg}
-                          type="button"
-                          onClick={() => setWizardTags(tg)}
-                          className={`h-9 px-2.5 rounded-md border text-[11px] font-mono tabular-nums transition-colors cursor-pointer ${
-                            wizardTags === tg
-                              ? 'bg-[#6685FF]/20 border-[#6685FF] text-[#A7C7FF]'
-                              : 'bg-[#191D25] border-[#292F3A] text-[#929BAA] hover:text-[#F3F5F9]'
-                          }`}
-                        >
-                          {tg}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-[#929BAA] mb-1.5">
-                    Teams in Each Group ({Math.max(1, Math.ceil(wizardSlots / Math.max(1, wizardGroups)))} Group(s))
-                  </label>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type="number"
-                      min="1"
-                      max="500"
-                      value={wizardGroups}
-                      onChange={e => setWizardGroups(Math.max(1, Math.min(500, parseInt(e.target.value, 10) || 12)))}
-                      className="w-full h-9 px-3 rounded-md bg-[#101319] border border-[#292F3A] text-[#F3F5F9] text-xs font-mono tabular-nums focus:outline-hidden focus:border-[#6685FF]"
-                      required
-                    />
-                    <div className="flex gap-1 shrink-0">
-                      {[12, 16, 20, 25].map(tpg => (
-                        <button
-                          key={tpg}
-                          type="button"
-                          onClick={() => setWizardGroups(tpg)}
-                          className={`h-9 px-2 rounded-md border text-[11px] font-mono tabular-nums transition-colors cursor-pointer ${
-                            wizardGroups === tpg
-                              ? 'bg-[#6685FF]/20 border-[#6685FF] text-[#A7C7FF]'
-                              : 'bg-[#191D25] border-[#292F3A] text-[#929BAA] hover:text-[#F3F5F9]'
-                          }`}
-                        >
-                          {tpg}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="sm:col-span-2 lg:col-span-3">
-                  <label className="block text-xs font-medium text-[#929BAA] mb-1.5">
-                    Role for Verified Teams (Unlocks #id-pass)
-                  </label>
-                  <input
-                    type="text"
-                    value={wizardRoleName}
-                    onChange={e => setWizardRoleName(e.target.value)}
-                    placeholder="Verified Team"
-                    className="w-full h-9 px-3 rounded-md bg-[#101319] border border-[#292F3A] text-[#F3F5F9] text-xs placeholder-[#707A89] focus:outline-hidden focus:border-[#6685FF]"
-                  />
-                </div>
-              </div>
-
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-4 border-t border-[#292F3A]">
-                <div className="text-xs text-[#929BAA] flex items-center gap-2">
-                  <Terminal className="w-3.5 h-3.5 text-[#6685FF] shrink-0" />
-                  <span>Discord Command Alternative:</span>
-                  <code className="text-[#A7C7FF] font-mono bg-[#101319] px-2 py-0.5 rounded border border-[#292F3A]">
-                    !setup {wizardSlots} {wizardTags} {wizardGroups} {wizardTitle.split(' ')[0]}
-                  </code>
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={isSettingUpTourney}
-                  className="h-9 px-4 rounded-md bg-[#6685FF] hover:bg-[#5473EE] text-[#F3F5F9] text-xs font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 whitespace-nowrap"
-                >
-                  <Wand2 className="w-3.5 h-3.5" />
-                  <span>{isSettingUpTourney ? 'Generating Channels & Roles...' : 'Auto-Create Category, Channels & Roles'}</span>
-                </button>
-              </div>
-
-              {wizardResult && (
-                <div
-                  className={`p-4 rounded-lg border ${
-                    wizardResult.success
-                      ? 'bg-[#31D69A]/10 border-[#31D69A]/30 text-[#F3F5F9]'
-                      : 'bg-[#FF626C]/10 border-[#FF626C]/30 text-[#F3F5F9]'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 font-semibold text-xs mb-2">
-                    {wizardResult.success ? (
-                      <CheckCircle2 className="w-4 h-4 text-[#31D69A]" />
-                    ) : (
-                      <AlertCircle className="w-4 h-4 text-[#FF626C]" />
-                    )}
-                    <span>
-                      {wizardResult.success
-                        ? 'Tournament Channels & Role Created Successfully'
-                        : 'Setup Encountered An Error'}
-                    </span>
-                  </div>
-                  {wizardResult.success ? (
-                    <div className="space-y-1.5 text-xs text-[#929BAA]">
-                      <p className="font-medium text-[#31D69A]">Items provisioned in Discord:</p>
-                      <ul className="list-disc list-inside space-y-0.5">
-                        {wizardResult.created.map((item, idx) => (
-                          <li key={idx} className="font-mono text-[11px] text-[#F3F5F9]">{item}</li>
+                  <div>
+                    <label className="block text-xs font-medium text-white/75 mb-2">
+                      Total Slots (2–500)
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        min="2"
+                        max="500"
+                        value={wizardSlots}
+                        onChange={e => setWizardSlots(Math.max(2, Math.min(500, parseInt(e.target.value, 10) || 20)))}
+                        className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-mono tabular-nums"
+                        required
+                      />
+                      <div className="flex gap-1 shrink-0">
+                        {[20, 48, 100, 500].map(sl => (
+                          <button
+                            key={sl}
+                            type="button"
+                            onClick={() => setWizardSlots(sl)}
+                            className={`h-11 px-2.5 rounded-xl border text-[11px] font-mono tabular-nums transition-all cursor-pointer ${
+                              wizardSlots === sl
+                                ? 'bg-[#0EA5E9]/20 border-[#38BDF8]/50 text-[#7DD3FC] font-semibold'
+                                : 'bg-white/[0.02] border-white/[0.08] text-white/50 hover:text-white hover:border-white/20'
+                            }`}
+                          >
+                            {sl}
+                          </button>
                         ))}
-                      </ul>
-                      {wizardResult.warnings && wizardResult.warnings.length > 0 && (
-                        <div className="mt-2 p-2.5 rounded bg-[#F0B75A]/10 border border-[#F0B75A]/30 text-[#F0B75A] space-y-1">
-                          <p className="font-semibold text-[11px]">Partial Setup Notices:</p>
-                          <ul className="list-disc list-inside text-[11px] text-[#F3F5F9] space-y-0.5">
-                            {wizardResult.warnings.map((w, i) => (
-                              <li key={i}>{w}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      <p className="text-[11px] text-[#929BAA] pt-1">
-                        Teams who tag {wizardTags} players in #registration will automatically receive the @{wizardRoleName} role and gain access to #id-pass.
-                      </p>
+                      </div>
                     </div>
-                  ) : (
-                    <div className="space-y-2 text-xs">
-                      <p className="text-[#FF626C]">{wizardResult.error}</p>
-                      {wizardResult.rolledBack && wizardResult.rolledBack.length > 0 && (
-                        <div className="p-2.5 rounded bg-[#101319] border border-[#292F3A] text-[#929BAA]">
-                          <p className="font-semibold text-[#F0B75A] mb-1">Automatic Rollback Executed:</p>
-                          <ul className="list-disc list-inside font-mono text-[11px] text-[#F3F5F9] space-y-0.5">
-                            {wizardResult.rolledBack.map((rb, idx) => (
-                              <li key={idx}>{rb}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-white/75 mb-2">
+                      Required Tags / Team
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        min="1"
+                        max="6"
+                        value={wizardTags}
+                        onChange={e => setWizardTags(parseInt(e.target.value, 10) || 4)}
+                        className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-mono tabular-nums"
+                        required
+                      />
+                      <div className="flex gap-1 shrink-0">
+                        {[2, 3, 4].map(tg => (
+                          <button
+                            key={tg}
+                            type="button"
+                            onClick={() => setWizardTags(tg)}
+                            className={`h-11 px-3 rounded-xl border text-[11px] font-mono tabular-nums transition-all cursor-pointer ${
+                              wizardTags === tg
+                                ? 'bg-[#0EA5E9]/20 border-[#38BDF8]/50 text-[#7DD3FC] font-semibold'
+                                : 'bg-white/[0.02] border-white/[0.08] text-white/50 hover:text-white hover:border-white/20'
+                            }`}
+                          >
+                            {tg}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  )}
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-white/75 mb-2">
+                      Teams per Group ({Math.max(1, Math.ceil(wizardSlots / Math.max(1, wizardGroups)))} Group(s))
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        min="1"
+                        max="500"
+                        value={wizardGroups}
+                        onChange={e => setWizardGroups(Math.max(1, Math.min(500, parseInt(e.target.value, 10) || 12)))}
+                        className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-mono tabular-nums"
+                        required
+                      />
+                      <div className="flex gap-1 shrink-0">
+                        {[12, 16, 20, 25].map(tpg => (
+                          <button
+                            key={tpg}
+                            type="button"
+                            onClick={() => setWizardGroups(tpg)}
+                            className={`h-11 px-2.5 rounded-xl border text-[11px] font-mono tabular-nums transition-all cursor-pointer ${
+                              wizardGroups === tpg
+                                ? 'bg-[#0EA5E9]/20 border-[#38BDF8]/50 text-[#7DD3FC] font-semibold'
+                                : 'bg-white/[0.02] border-white/[0.08] text-white/50 hover:text-white hover:border-white/20'
+                            }`}
+                          >
+                            {tpg}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="sm:col-span-2 lg:col-span-3">
+                    <label className="block text-xs font-medium text-white/75 mb-2">
+                      Role for Verified Teams (Unlocks #id-pass)
+                    </label>
+                    <input
+                      type="text"
+                      value={wizardRoleName}
+                      onChange={e => setWizardRoleName(e.target.value)}
+                      placeholder="Verified Team"
+                      className="w-full h-11 px-3.5 rounded-xl esports-input text-xs placeholder-white/35"
+                    />
+                  </div>
                 </div>
-              )}
-            </form>
-          )}
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-6 border-t border-white/[0.07]">
+                  <div className="text-xs text-white/55 flex flex-wrap items-center gap-2">
+                    <Terminal className="w-3.5 h-3.5 text-[#7DD3FC] shrink-0" />
+                    <span>Discord Command Alternative:</span>
+                    <code className="text-[#7DD3FC] font-mono bg-white/[0.03] px-3 py-1 rounded-lg border border-white/[0.08]">
+                      !setup {wizardSlots} {wizardTags} {wizardGroups} {wizardTitle.split(' ')[0]}
+                    </code>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isSettingUpTourney}
+                    className="btn-glacier-primary h-11 px-6 rounded-xl text-xs font-bold flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                  >
+                    <Wand2 className="w-4 h-4" />
+                    <span>{isSettingUpTourney ? 'Generating Channels & Roles...' : 'Auto-Create Category, Channels & Roles'}</span>
+                  </button>
+                </div>
+
+                {wizardResult && (
+                  <div
+                    className={`p-5 rounded-2xl border ${
+                      wizardResult.success
+                        ? 'bg-[#10B981]/[0.07] border-[#10B981]/30 text-white'
+                        : 'bg-[#EF4444]/[0.07] border-[#EF4444]/30 text-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 font-semibold text-xs mb-2">
+                      {wizardResult.success ? (
+                        <CheckCircle2 className="w-4 h-4 text-[#10B981]" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 text-[#F87171]" />
+                      )}
+                      <span>
+                        {wizardResult.success
+                          ? 'Tournament Channels & Role Created Successfully'
+                          : 'Setup Encountered An Error'}
+                      </span>
+                    </div>
+                    {wizardResult.success ? (
+                      <div className="space-y-2 text-xs text-white/60">
+                        <p className="font-medium text-[#10B981]">Items provisioned in Discord:</p>
+                        <ul className="list-disc list-inside space-y-1">
+                          {wizardResult.created.map((item, idx) => (
+                            <li key={idx} className="font-mono text-[11px] text-white/90">{item}</li>
+                          ))}
+                        </ul>
+                        {wizardResult.warnings && wizardResult.warnings.length > 0 && (
+                          <div className="mt-2 p-3 rounded-xl bg-[#F59E0B]/10 border border-[#F59E0B]/30 text-[#F59E0B] space-y-1">
+                            <p className="font-semibold text-[11px]">Partial Setup Notices:</p>
+                            <ul className="list-disc list-inside text-[11px] text-white/90 space-y-0.5">
+                              {wizardResult.warnings.map((w, i) => (
+                                <li key={i}>{w}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        <p className="text-[11px] text-white/50 pt-1">
+                          Teams who tag {wizardTags} players in #registration will automatically receive the @{wizardRoleName} role and gain access to #id-pass.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 text-xs">
+                        <p className="text-[#F87171]">{wizardResult.error}</p>
+                        {wizardResult.rolledBack && wizardResult.rolledBack.length > 0 && (
+                          <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10 text-white/60">
+                            <p className="font-semibold text-[#F59E0B] mb-1">Automatic Rollback Executed:</p>
+                            <ul className="list-disc list-inside font-mono text-[11px] text-white/90 space-y-0.5">
+                              {wizardResult.rolledBack.map((rb, idx) => (
+                                <li key={idx}>{rb}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </form>
+            )}
+          </div>
         </section>
       )}
 
       {botStatus.isOnline && (
-        <section className="p-5 sm:p-6 rounded-xl bg-[#14171D] border border-[#292F3A] space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#292F3A] pb-3.5">
-            <div className="flex items-center gap-2.5">
-              <Server className="w-4 h-4 text-[#6685FF]" />
-              <h3 className="font-display text-base font-bold text-[#F3F5F9]">
+        <section className="space-y-8">
+          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+            <div>
+              <div className="eyebrow-label mb-1.5">
+                Active Guild Bindings
+              </div>
+              <h3 className="font-display text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
                 Connected Discord Communities ({botStatus.guilds.length})
               </h3>
             </div>
@@ -753,25 +792,25 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
               href={adminInviteUrl}
               target="_blank"
               rel="noreferrer"
-              className="text-xs text-[#A7C7FF] hover:text-[#F3F5F9] flex items-center gap-1 font-medium transition-colors"
+              className="text-xs text-[#38BDF8] hover:text-white flex items-center gap-1.5 font-semibold transition-colors"
               title="Re-authorize bot with Administrator permissions to resolve all permission limits"
             >
               <span>Re-Authorize with Admin Role</span>
-              <ExternalLink className="w-3 h-3" />
+              <ExternalLink className="w-3.5 h-3.5" />
             </a>
           </div>
 
           {botStatus.guilds.length === 0 ? (
-            <div className="p-8 text-center bg-[#191D25] rounded-lg border border-[#292F3A]">
-              <p className="text-sm font-semibold text-[#F3F5F9]">
+            <div className="p-10 text-center rounded-[28px] esports-card">
+              <p className="font-display text-base font-bold text-white">
                 Bot is online, but hasn't been added to a server yet
               </p>
-              <p className="text-xs text-[#929BAA] mt-1">
+              <p className="text-xs sm:text-sm text-white/55 mt-1.5">
                 Use the invite links below to add FFA-Manager to your Discord community.
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-3.5">
+            <div className="grid grid-cols-1 gap-5">
               {botStatus.guilds.map((guild: BotGuildInfo) => {
                 const hasReg = guild.channels.some(c => c.name === config.regChannel);
                 const canManageChannels = guild.permissions?.hasManageChannels || guild.permissions?.isAdmin;
@@ -780,18 +819,18 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
                 return (
                   <div
                     key={guild.id}
-                    className="p-4 sm:p-5 rounded-lg bg-[#191D25] border border-[#292F3A] space-y-4"
+                    className="p-5 sm:p-6 rounded-[24px] esports-card space-y-5"
                   >
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-md bg-[#14171D] text-[#A7C7FF] font-display font-bold text-sm flex items-center justify-center border border-[#292F3A] shrink-0">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="flex items-center gap-4">
+                        <div className="w-11 h-11 rounded-2xl bg-[#0EA5E9]/10 text-[#38BDF8] font-display font-bold text-base flex items-center justify-center border border-[#38BDF8]/25 shrink-0">
                           {guild.name.charAt(0)}
                         </div>
                         <div>
-                          <h4 className="font-display font-bold text-[#F3F5F9] text-sm">
+                          <h4 className="font-display font-bold text-white text-base sm:text-lg">
                             {guild.name}
                           </h4>
-                          <div className="text-xs text-[#707A89] font-mono tabular-nums mt-0.5">
+                          <div className="text-xs text-white/45 font-mono tabular-nums mt-0.5">
                             {guild.memberCount} members · Guild ID: {guild.id}
                           </div>
                         </div>
@@ -799,19 +838,19 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
 
                       <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono">
                         <span
-                          className={`px-2 py-0.5 rounded border ${
+                          className={`px-3 py-1 rounded-full border ${
                             canManageChannels
-                              ? 'bg-[#31D69A]/10 text-[#31D69A] border-[#31D69A]/30'
-                              : 'bg-[#F0B75A]/10 text-[#F0B75A] border-[#F0B75A]/30'
+                              ? 'bg-[#10B981]/10 text-[#10B981] border-[#10B981]/25'
+                              : 'bg-[#F59E0B]/10 text-[#F59E0B] border-[#F59E0B]/25'
                           }`}
                         >
                           Manage Channels: {canManageChannels ? 'Granted' : 'Missing'}
                         </span>
                         <span
-                          className={`px-2 py-0.5 rounded border ${
+                          className={`px-3 py-1 rounded-full border ${
                             canManageRoles
-                              ? 'bg-[#31D69A]/10 text-[#31D69A] border-[#31D69A]/30'
-                              : 'bg-[#F0B75A]/10 text-[#F0B75A] border-[#F0B75A]/30'
+                              ? 'bg-[#10B981]/10 text-[#10B981] border-[#10B981]/25'
+                              : 'bg-[#F59E0B]/10 text-[#F59E0B] border-[#F59E0B]/25'
                           }`}
                         >
                           Manage Roles: {canManageRoles ? 'Granted' : 'Missing'}
@@ -820,52 +859,52 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
                     </div>
 
                     {!canManageChannels && (
-                      <div className="p-3.5 rounded-md bg-[#F0B75A]/10 border border-[#F0B75A]/30 text-xs space-y-2">
-                        <div className="flex items-center gap-2 font-semibold text-[#F0B75A]">
+                      <div className="p-4 rounded-2xl bg-[#F59E0B]/[0.07] border border-[#F59E0B]/25 text-xs space-y-2.5">
+                        <div className="flex items-center gap-2 font-semibold text-[#F59E0B]">
                           <AlertTriangle className="w-4 h-4 shrink-0" />
                           <span>Missing "Manage Channels" Permission in "{guild.name}"</span>
                         </div>
-                        <p className="text-[#929BAA] text-[11px] leading-relaxed">
-                          The bot cannot automatically create new channels in this server because its Discord role lacks <strong className="text-[#F3F5F9]">Manage Channels</strong> permission.
+                        <p className="text-white/70 text-xs leading-relaxed">
+                          The bot cannot automatically create new channels in this server because its Discord role lacks <strong className="text-white">Manage Channels</strong> permission.
                         </p>
-                        <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                        <div className="flex flex-wrap items-center gap-3 pt-1">
                           <a
                             href={adminInviteUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="h-8 px-3 rounded-md bg-[#6685FF] hover:bg-[#5473EE] text-[#F3F5F9] text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                            className="btn-glacier-primary h-9 px-4 rounded-xl text-xs font-bold flex items-center gap-1.5"
                           >
                             <ExternalLink className="w-3.5 h-3.5" />
                             <span>1-Click Fix: Re-Authorize with Admin Role</span>
                           </a>
-                          <span className="text-[#707A89] text-xs">or select an existing channel below:</span>
+                          <span className="text-white/45 text-xs">or select an existing channel below:</span>
                         </div>
                       </div>
                     )}
 
-                    <div className="pt-3 border-t border-[#292F3A] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="pt-5 border-t border-white/[0.07] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                       <div>
-                        <div className="text-xs font-semibold text-[#F3F5F9] flex items-center gap-1.5">
-                          <Hash className="w-3.5 h-3.5 text-[#6685FF]" />
+                        <div className="text-xs font-semibold text-white flex items-center gap-2">
+                          <Hash className="w-3.5 h-3.5 text-[#38BDF8]" />
                           <span>Active Registration Channel:</span>
-                          <code className="text-[#31D69A] font-mono">#{config.regChannel}</code>
+                          <code className="text-[#10B981] font-mono">#{config.regChannel}</code>
                         </div>
-                        <p className="text-[11px] text-[#707A89] mt-0.5">
+                        <p className="text-xs text-white/45 mt-1">
                           The bot listens for tournament tag registrations in this channel.
                         </p>
                       </div>
 
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2.5">
                         <select
                           value={guild.channels.some(c => c.name === config.regChannel) ? config.regChannel : ''}
                           onChange={e => handleSelectRegChannel(e.target.value)}
-                          className="h-8 px-2.5 rounded-md bg-[#101319] border border-[#292F3A] text-[#F3F5F9] text-xs font-mono focus:outline-hidden focus:border-[#6685FF] cursor-pointer"
+                          className="h-10 px-3.5 rounded-xl esports-input text-xs font-mono cursor-pointer"
                         >
-                          <option value="" disabled>
+                          <option value="" disabled className="bg-[#090C12]">
                             Select server channel...
                           </option>
                           {guild.channels.map(ch => (
-                            <option key={ch.id} value={ch.name}>
+                            <option key={ch.id} value={ch.name} className="bg-[#090C12]">
                               #{ch.name}
                             </option>
                           ))}
@@ -875,7 +914,7 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
                           <button
                             onClick={() => handleAutoSetupGuild(guild.id)}
                             disabled={settingUpGuildId === guild.id}
-                            className="h-8 px-3 rounded-md bg-[#6685FF] hover:bg-[#5473EE] text-[#F3F5F9] text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer"
+                            className="btn-glacier-primary h-10 px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
                           >
                             <Wand2 className="w-3.5 h-3.5" />
                             <span>{settingUpGuildId === guild.id ? 'Creating...' : 'Create #registration'}</span>
@@ -891,98 +930,18 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
         </section>
       )}
 
-      <section className="p-5 sm:p-6 rounded-xl bg-[#14171D] border border-[#292F3A] space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#292F3A] pb-3.5">
-          <div className="flex items-center gap-2.5">
-            <ShieldCheck className="w-4 h-4 text-[#6685FF]" />
-            <h3 className="font-display text-base font-bold text-[#F3F5F9]">
-              Bot Authorization & Server Invite Link
+      <section id="bot-commands-section" className="space-y-8 scroll-mt-24">
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+          <div>
+            <div className="eyebrow-label mb-1.5">
+              Command Architecture
+            </div>
+            <h3 className="font-display text-2xl sm:text-4xl font-extrabold text-white tracking-tight">
+              Discord Slash Commands
             </h3>
-          </div>
-
-          <a
-            href="https://discord.com/developers/applications"
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs text-[#A7C7FF] hover:text-[#F3F5F9] flex items-center gap-1 font-medium transition-colors"
-          >
-            <span>Open Developer Portal</span>
-            <ExternalLink className="w-3 h-3" />
-          </a>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="p-4 rounded-lg bg-[#191D25] border border-[#6685FF]/40 flex flex-col justify-between space-y-3">
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-semibold text-[#F3F5F9] text-xs flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-[#6685FF]" />
-                  <span>Full Admin Invite (Recommended)</span>
-                </span>
-                <span className="text-[11px] font-mono text-[#A7C7FF]">
-                  permissions=8
-                </span>
-              </div>
-              <p className="text-xs text-[#929BAA] leading-relaxed">
-                Grants full administrative permissions so the bot can provision <code className="text-[#F3F5F9] font-mono">#registration</code>, <code className="text-[#F3F5F9] font-mono">#slot-list</code>, and assign the <code className="text-[#F3F5F9] font-mono">@Confirmed Slot</code> role without hierarchy errors.
-              </p>
-            </div>
-            <a
-              href={adminInviteUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="h-9 w-full px-3 rounded-md bg-[#6685FF] hover:bg-[#5473EE] text-[#F3F5F9] text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              <span>Authorize Bot as Admin</span>
-            </a>
-          </div>
-
-          <div className="p-4 rounded-lg bg-[#191D25] border border-[#292F3A] flex flex-col justify-between space-y-3">
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-semibold text-[#F3F5F9] text-xs">
-                  Standard Scrims Invite
-                </span>
-                <span className="text-[11px] font-mono text-[#707A89]">
-                  permissions=268519488
-                </span>
-              </div>
-              <p className="text-xs text-[#929BAA] leading-relaxed">
-                Standard operational permissions: Manage Channels, Manage Roles, Send Messages, and Embed Links.
-              </p>
-            </div>
-            <a
-              href={standardInviteUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="h-9 w-full px-3 rounded-md bg-[#14171D] hover:bg-[#222731] text-[#F3F5F9] border border-[#292F3A] text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
-            >
-              <ExternalLink className="w-3.5 h-3.5 text-[#929BAA]" />
-              <span>Standard Invite Link</span>
-            </a>
-          </div>
-        </div>
-      </section>
-
-      <section className="p-5 sm:p-6 rounded-xl bg-[#14171D] border border-[#292F3A] space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#292F3A] pb-3.5">
-          <div className="flex items-center gap-2.5">
-            <Zap className="w-4 h-4 text-[#6685FF]" />
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-display text-base font-bold text-[#F3F5F9]">
-                  Discord Slash Commands
-                </h3>
-                <span className="text-xs text-[#707A89]" aria-hidden="true">·</span>
-                <span className="text-xs font-mono text-[#A7C7FF]">
-                  Fully Functional
-                </span>
-              </div>
-              <p className="text-xs text-[#929BAA] mt-0.5">
-                Type <code className="text-[#A7C7FF] font-mono">/</code> in any Discord server channel where the bot is present.
-              </p>
-            </div>
+            <p className="text-xs sm:text-sm text-white/55 mt-1.5">
+              Type <code className="text-[#38BDF8] font-mono">/</code> in any Discord server channel where the bot is present.
+            </p>
           </div>
 
           <button
@@ -1001,182 +960,182 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
                 setFeedback({ type: 'error', message: err.message });
               }
             }}
-            className="h-8 px-3.5 rounded-md bg-[#191D25] hover:bg-[#222731] text-[#F3F5F9] border border-[#292F3A] text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer self-start sm:self-auto whitespace-nowrap"
+            className="btn-glacier-secondary h-11 px-5 rounded-xl text-xs font-semibold flex items-center gap-2 cursor-pointer self-start md:self-auto whitespace-nowrap"
           >
-            <Sparkles className="w-3.5 h-3.5 text-[#6685FF]" />
+            <Sparkles className="w-4 h-4 text-[#38BDF8]" />
             <span>Sync Slash Commands to Discord</span>
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          <div className="p-3.5 rounded-md bg-[#101319] border border-[#292F3A] space-y-1.5">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="p-6 rounded-2xl esports-card-sub space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-[#A7C7FF]">/setup</span>
-              <span className="text-[11px] text-[#707A89] font-mono">slots, tags, groups, title</span>
+              <span className="font-mono text-xs font-bold text-[#38BDF8] bg-[#38BDF8]/10 px-2.5 py-1 rounded-lg border border-[#38BDF8]/20">/setup</span>
+              <span className="text-[11px] text-white/40 font-mono">slots, tags, groups, title</span>
             </div>
-            <p className="text-xs text-[#929BAA] leading-relaxed">
-              Auto-creates category (<code className="text-[#F3F5F9] font-mono">🏆 ┃ TOURNAMENTS</code>), channels (<code className="text-[#F3F5F9] font-mono">#rules-format</code>, <code className="text-[#F3F5F9] font-mono">#registration</code>, <code className="text-[#F3F5F9] font-mono">#slot-list</code>, <code className="text-[#F3F5F9] font-mono">#id-pass</code>) &amp; <code className="text-[#F3F5F9] font-mono">@Verified Team</code> role.
+            <p className="text-xs text-white/55 leading-relaxed">
+              Auto-creates category (<code className="text-white/85 font-mono">🏆 ┃ TOURNAMENTS</code>), channels (<code className="text-white/85 font-mono">#rules-format</code>, <code className="text-white/85 font-mono">#registration</code>, <code className="text-white/85 font-mono">#slot-list</code>, <code className="text-white/85 font-mono">#id-pass</code>) &amp; <code className="text-white/85 font-mono">@Verified Team</code> role.
             </p>
           </div>
 
-          <div className="p-3.5 rounded-md bg-[#101319] border border-[#292F3A] space-y-1.5">
+          <div className="p-6 rounded-2xl esports-card-sub space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-[#31D69A]">/create tournament</span>
-              <span className="text-[11px] text-[#707A89] font-mono">slots, tags, groups, title</span>
+              <span className="font-mono text-xs font-bold text-[#10B981] bg-[#10B981]/10 px-2.5 py-1 rounded-lg border border-[#10B981]/20">/create tournament</span>
+              <span className="text-[11px] text-white/40 font-mono">slots, tags, groups, title</span>
             </div>
-            <p className="text-xs text-[#929BAA] leading-relaxed">
+            <p className="text-xs text-white/55 leading-relaxed">
               Provisions a tournament with custom slot counts, multi-group breakdowns (Group A, B, C, D), and role permissions.
             </p>
           </div>
 
-          <div className="p-3.5 rounded-md bg-[#101319] border border-[#292F3A] space-y-1.5">
+          <div className="p-6 rounded-2xl esports-card-sub space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-[#F0B75A]">/idpass</span>
-              <span className="text-[11px] text-[#707A89] font-mono">room_id, password, map, time</span>
+              <span className="font-mono text-xs font-bold text-[#F59E0B] bg-[#F59E0B]/10 px-2.5 py-1 rounded-lg border border-[#F59E0B]/20">/idpass</span>
+              <span className="text-[11px] text-white/40 font-mono">room_id, password, map, time</span>
             </div>
-            <p className="text-xs text-[#929BAA] leading-relaxed">
-              Dispatches private custom lobby Room ID &amp; Password to <code className="text-[#F3F5F9] font-mono">#🔑┃id-pass</code> with <code className="text-[#F3F5F9] font-mono">@here</code> ping for verified teams.
+            <p className="text-xs text-white/55 leading-relaxed">
+              Dispatches private custom lobby Room ID &amp; Password to <code className="text-white/85 font-mono">#🔑┃id-pass</code> with <code className="text-white/85 font-mono">@here</code> ping for verified teams.
             </p>
           </div>
 
-          <div className="p-3.5 rounded-md bg-[#101319] border border-[#292F3A] space-y-1.5">
+          <div className="p-6 rounded-2xl esports-card-sub space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-[#31D69A]">/lock &amp; /unlock</span>
-              <span className="text-[11px] text-[#707A89] font-mono">reason (optional)</span>
+              <span className="font-mono text-xs font-bold text-[#10B981] bg-[#10B981]/10 px-2.5 py-1 rounded-lg border border-[#10B981]/20">/lock &amp; /unlock</span>
+              <span className="text-[11px] text-white/40 font-mono">reason (optional)</span>
             </div>
-            <p className="text-xs text-[#929BAA] leading-relaxed">
-              Instantly locks or unlocks tournament registrations in <code className="text-[#F3F5F9] font-mono">#registration</code> and posts an official status banner.
+            <p className="text-xs text-white/55 leading-relaxed">
+              Instantly locks or unlocks tournament registrations in <code className="text-white/85 font-mono">#registration</code> and posts an official status banner.
             </p>
           </div>
 
-          <div className="p-3.5 rounded-md bg-[#101319] border border-[#292F3A] space-y-1.5">
+          <div className="p-6 rounded-2xl esports-card-sub space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-[#A7C7FF]">/tagcheck</span>
-              <span className="text-[11px] text-[#707A89] font-mono">user (@mention)</span>
+              <span className="font-mono text-xs font-bold text-[#38BDF8] bg-[#38BDF8]/10 px-2.5 py-1 rounded-lg border border-[#38BDF8]/20">/tagcheck</span>
+              <span className="text-[11px] text-white/40 font-mono">user (@mention)</span>
             </div>
-            <p className="text-xs text-[#929BAA] leading-relaxed">
+            <p className="text-xs text-white/55 leading-relaxed">
               Inspects any Discord member to check if they are already registered on a squad, blacklisted, or eligible to register.
             </p>
           </div>
 
-          <div className="p-3.5 rounded-md bg-[#101319] border border-[#292F3A] space-y-1.5">
+          <div className="p-6 rounded-2xl esports-card-sub space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-[#A7C7FF]">/team-info</span>
-              <span className="text-[11px] text-[#707A89] font-mono">query (slot # or name)</span>
+              <span className="font-mono text-xs font-bold text-[#38BDF8] bg-[#38BDF8]/10 px-2.5 py-1 rounded-lg border border-[#38BDF8]/20">/team-info</span>
+              <span className="text-[11px] text-white/40 font-mono">query (slot # or name)</span>
             </div>
-            <p className="text-xs text-[#929BAA] leading-relaxed">
+            <p className="text-xs text-white/55 leading-relaxed">
               Displays full team dossier including Slot #, Group, Captain, all verified player tags, and registration timestamp.
             </p>
           </div>
 
-          <div className="p-3.5 rounded-md bg-[#101319] border border-[#292F3A] space-y-1.5">
+          <div className="p-6 rounded-2xl esports-card-sub space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-[#FF626C]">/blacklist</span>
-              <span className="text-[11px] text-[#707A89] font-mono">add | remove | list</span>
+              <span className="font-mono text-xs font-bold text-[#F87171] bg-[#EF4444]/10 px-2.5 py-1 rounded-lg border border-[#EF4444]/20">/blacklist</span>
+              <span className="text-[11px] text-white/40 font-mono">add | remove | list</span>
             </div>
-            <p className="text-xs text-[#929BAA] leading-relaxed">
+            <p className="text-xs text-white/55 leading-relaxed">
               Bans rule-violators from registering or being tagged in any squad. Auto-rejects teams tagging blacklisted players.
             </p>
           </div>
 
-          <div className="p-3.5 rounded-md bg-[#101319] border border-[#292F3A] space-y-1.5">
+          <div className="p-6 rounded-2xl esports-card-sub space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-[#F0B75A]">/standings</span>
-              <span className="text-[11px] text-[#707A89] font-mono">group (optional)</span>
+              <span className="font-mono text-xs font-bold text-[#F59E0B] bg-[#F59E0B]/10 px-2.5 py-1 rounded-lg border border-[#F59E0B]/20">/standings</span>
+              <span className="text-[11px] text-white/40 font-mono">group (optional)</span>
             </div>
-            <p className="text-xs text-[#929BAA] leading-relaxed">
+            <p className="text-xs text-white/55 leading-relaxed">
               Posts the live tournament leaderboard, wins count, finish points, and official placement scoring matrix.
             </p>
           </div>
 
-          <div className="p-3.5 rounded-md bg-[#101319] border border-[#292F3A] space-y-1.5">
+          <div className="p-6 rounded-2xl esports-card-sub space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-[#31D69A]">/swap-slots</span>
-              <span className="text-[11px] text-[#707A89] font-mono">slot1, slot2</span>
+              <span className="font-mono text-xs font-bold text-[#10B981] bg-[#10B981]/10 px-2.5 py-1 rounded-lg border border-[#10B981]/20">/swap-slots</span>
+              <span className="text-[11px] text-white/40 font-mono">slot1, slot2</span>
             </div>
-            <p className="text-xs text-[#929BAA] leading-relaxed">
-              Swaps the slot numbers and group assignments of two registered teams and updates <code className="text-[#F3F5F9] font-mono">#slot-list</code> live.
+            <p className="text-xs text-white/55 leading-relaxed">
+              Swaps the slot numbers and group assignments of two registered teams and updates <code className="text-white/85 font-mono">#slot-list</code> live.
             </p>
           </div>
 
-          <div className="p-3.5 rounded-md bg-[#101319] border border-[#292F3A] space-y-1.5">
+          <div className="p-6 rounded-2xl esports-card-sub space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-[#FF626C]">/delete slot</span>
-              <span className="text-[11px] text-[#707A89] font-mono">slot (int)</span>
+              <span className="font-mono text-xs font-bold text-[#F87171] bg-[#EF4444]/10 px-2.5 py-1 rounded-lg border border-[#EF4444]/20">/delete slot</span>
+              <span className="text-[11px] text-white/40 font-mono">slot (int)</span>
             </div>
-            <p className="text-xs text-[#929BAA] leading-relaxed">
-              Removes the team from the specified slot, auto-promotes the first waitlist team to confirmed, and refreshes <code className="text-[#F3F5F9] font-mono">#slot-list</code>.
+            <p className="text-xs text-white/55 leading-relaxed">
+              Removes the team from the specified slot, auto-promotes the first waitlist team to confirmed, and refreshes <code className="text-white/85 font-mono">#slot-list</code>.
             </p>
           </div>
 
-          <div className="p-3.5 rounded-md bg-[#101319] border border-[#292F3A] space-y-1.5">
+          <div className="p-6 rounded-2xl esports-card-sub space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-[#FF626C]">/delete tournament</span>
-              <span className="text-[11px] text-[#707A89] font-mono">delete_channels (bool)</span>
+              <span className="font-mono text-xs font-bold text-[#F87171] bg-[#EF4444]/10 px-2.5 py-1 rounded-lg border border-[#EF4444]/20">/delete tournament</span>
+              <span className="text-[11px] text-white/40 font-mono">delete_channels (bool)</span>
             </div>
-            <p className="text-xs text-[#929BAA] leading-relaxed">
+            <p className="text-xs text-white/55 leading-relaxed">
               Deletes tournament channels and category, cleans up permissions, and resets all registered rosters.
             </p>
           </div>
 
-          <div className="p-3.5 rounded-md bg-[#101319] border border-[#292F3A] space-y-1.5">
+          <div className="p-6 rounded-2xl esports-card-sub space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-[#A7C7FF]">/rules · /announce · /export</span>
-              <span className="text-[11px] text-[#707A89] font-mono">+ /slots, /help</span>
+              <span className="font-mono text-xs font-bold text-[#38BDF8] bg-[#38BDF8]/10 px-2.5 py-1 rounded-lg border border-[#38BDF8]/20">/rules · /announce · /export</span>
+              <span className="text-[11px] text-white/40 font-mono">+ /slots, /help</span>
             </div>
-            <p className="text-xs text-[#929BAA] leading-relaxed">
-              Publish the official rulebook, broadcast announcements with <code className="text-[#F3F5F9] font-mono">@here</code>, or export clean rosters in Markdown/CSV.
+            <p className="text-xs text-white/55 leading-relaxed">
+              Publish the official rulebook, broadcast announcements with <code className="text-white/85 font-mono">@here</code>, or export clean rosters in Markdown/CSV.
             </p>
           </div>
         </div>
       </section>
 
-      <section className="p-5 sm:p-6 rounded-xl bg-[#14171D] border border-[#292F3A] space-y-3.5">
-        <div className="flex items-center justify-between border-b border-[#292F3A] pb-3">
-          <div className="flex items-center gap-2.5">
-            <Activity className="w-4 h-4 text-[#6685FF]" />
-            <h3 className="font-display text-base font-bold text-[#F3F5F9]">
-              Real-Time Gateway Activity Feed
+      <section className="p-5 sm:p-6 rounded-[24px] esports-card space-y-5">
+        <div className="flex items-center justify-between border-b border-white/[0.07] pb-4">
+          <div className="flex items-center gap-3">
+            <Activity className="w-4 h-4 text-[#38BDF8]" />
+            <h3 className="font-display text-lg sm:text-xl font-bold text-white">
+              Real-Time Gateway Event Stream
             </h3>
           </div>
-          <span className="text-[11px] font-mono text-[#707A89]">
-            Auto-refreshes live
+          <span className="text-[11px] font-mono text-white/40">
+            Live Stream
           </span>
         </div>
 
-        <div className="rounded-md bg-[#101319] border border-[#292F3A] p-3.5 max-h-64 overflow-y-auto divide-y divide-[#292F3A]/50 font-mono text-xs">
+        <div className="rounded-2xl bg-black/60 border border-white/[0.07] p-5 max-h-64 overflow-y-auto divide-y divide-white/[0.06] font-mono text-xs">
           {(!botStatus.events || botStatus.events.length === 0) ? (
-            <div className="text-[#707A89] text-center py-6">
+            <div className="text-white/40 text-center py-8">
               Waiting for Discord events...
             </div>
           ) : (
             botStatus.events.map((evt: BotLogEvent) => (
               <div
                 key={evt.id}
-                className="py-1.5 first:pt-0 last:pb-0 flex items-start gap-2.5 text-[11px] leading-relaxed"
+                className="py-2.5 first:pt-0 last:pb-0 flex items-start gap-3 text-[11px] leading-relaxed"
               >
-                <span className="text-[#707A89] tabular-nums shrink-0">
+                <span className="text-white/40 tabular-nums shrink-0">
                   {new Date(evt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                 </span>
                 <span
-                  className={`w-14 text-center py-0.2 rounded text-[10px] font-semibold uppercase shrink-0 border ${
+                  className={`w-14 text-center py-0.5 rounded text-[10px] font-semibold uppercase shrink-0 border ${
                     evt.type === 'success'
-                      ? 'bg-[#31D69A]/10 text-[#31D69A] border-[#31D69A]/30'
+                      ? 'bg-[#10B981]/10 text-[#10B981] border-[#10B981]/25'
                       : evt.type === 'warn'
-                      ? 'bg-[#F0B75A]/10 text-[#F0B75A] border-[#F0B75A]/30'
+                      ? 'bg-[#F59E0B]/10 text-[#F59E0B] border-[#F59E0B]/25'
                       : evt.type === 'error'
-                      ? 'bg-[#FF626C]/10 text-[#FF626C] border-[#FF626C]/30'
-                      : 'bg-[#191D25] text-[#929BAA] border-[#292F3A]'
+                      ? 'bg-[#EF4444]/10 text-[#F87171] border-[#EF4444]/25'
+                      : 'bg-white/[0.04] text-white/50 border-white/10'
                   }`}
                 >
                   {evt.type}
                 </span>
                 {evt.guildName && (
-                  <span className="text-[#A7C7FF] shrink-0">
+                  <span className="text-[#38BDF8] shrink-0">
                     [{evt.guildName}]
                   </span>
                 )}
-                <span className="text-[#F3F5F9] select-text break-words">
+                <span className="text-white/85 select-text break-words">
                   {evt.message}
                 </span>
               </div>
@@ -1187,3 +1146,4 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
     </div>
   );
 };
+

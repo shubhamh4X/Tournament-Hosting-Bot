@@ -122,57 +122,60 @@ export const SlotRosterTable: React.FC<SlotRosterTableProps> = ({
   };
 
   return (
-    <div className="space-y-5 w-full">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-5 sm:p-6 rounded-xl bg-[#14171D] border border-[#292F3A]">
-        <div>
-          <div className="flex flex-wrap items-center gap-2.5">
-            <h2 className="font-display text-base sm:text-lg font-bold text-[#F3F5F9] tracking-tight">
+    <div className="space-y-8 w-full">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 p-5 sm:p-6 rounded-[24px] esports-card">
+        <div className="space-y-2">
+          <div className="eyebrow-label">
+            Real-Time Verified Squads
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="font-display text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
               Live Tournament Slot Roster
             </h2>
-            <span className="text-xs font-mono tabular-nums px-2 py-0.5 rounded bg-[#191D25] text-[#A7C7FF] border border-[#292F3A]">
+            <span className="text-xs font-mono tabular-nums px-3 py-1 rounded-full bg-white/[0.04] text-[#38BDF8] border border-white/10">
               {confirmed.length}/{config.totalSlots} Slots Occupied
             </span>
           </div>
-          <p className="text-xs text-[#929BAA] mt-1">
+          <p className="text-xs sm:text-sm text-white/55 max-w-2xl leading-relaxed">
             Real-time slots verified by FFA | Glacier Cup Manager™ Tagcheck. Kicking a confirmed team automatically promotes the top waitlist team.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+        <div className="flex flex-wrap items-center gap-3 shrink-0">
           <button
             onClick={() => setIsRegisterModalOpen(true)}
-            className="h-9 px-3.5 rounded-md bg-[#6685FF] hover:bg-[#5473EE] text-[#F3F5F9] text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shadow-sm"
+            className="btn-glacier-primary h-11 px-5 rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer whitespace-nowrap"
           >
-            <UserPlus className="w-3.5 h-3.5" />
+            <UserPlus className="w-4 h-4" />
             <span>Register Team</span>
           </button>
 
           <button
             onClick={handleCopyDiscordFormat}
-            className="h-9 px-3.5 rounded-md bg-[#191D25] hover:bg-[#222731] text-[#F3F5F9] border border-[#292F3A] text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+            className="btn-glacier-secondary h-11 px-4 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap"
           >
-            <Copy className="w-3.5 h-3.5 text-[#6685FF]" />
+            <Copy className="w-3.5 h-3.5 text-[#38BDF8]" />
             <span>{copiedDiscord ? 'Copied to Clipboard!' : 'Copy Discord Format'}</span>
           </button>
 
           <button
             onClick={handleExportCSV}
-            className="h-9 px-3.5 rounded-md bg-[#191D25] hover:bg-[#222731] text-[#F3F5F9] border border-[#292F3A] text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+            className="btn-glacier-secondary h-11 px-4 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap"
           >
-            <Download className="w-3.5 h-3.5 text-[#31D69A]" />
+            <Download className="w-3.5 h-3.5 text-[#10B981]" />
             <span>Export CSV</span>
           </button>
         </div>
       </div>
 
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-1 p-1 bg-[#101217] rounded-md border border-[#292F3A]">
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-1.5 p-1.5 bg-white/[0.03] rounded-2xl border border-white/[0.08]">
           <button
             onClick={() => setActiveTab('all')}
-            className={`h-7 px-3 rounded text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+            className={`h-9 px-4 rounded-xl text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
               activeTab === 'all'
-                ? 'bg-[#191D25] text-[#F3F5F9] border border-[#292F3A]'
-                : 'text-[#929BAA] hover:text-[#F3F5F9]'
+                ? 'bg-white/[0.09] text-white border border-white/15'
+                : 'text-white/55 hover:text-white'
             }`}
           >
             All Teams (<span className="font-mono tabular-nums">{teams.length}</span>)
@@ -187,10 +190,10 @@ export const SlotRosterTable: React.FC<SlotRosterTableProps> = ({
                 <button
                   key={gName}
                   onClick={() => setActiveTab(`group-${gLetter}`)}
-                  className={`h-7 px-2.5 rounded text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  className={`h-9 px-4 rounded-xl text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
                     activeTab === `group-${gLetter}`
-                      ? 'bg-[#6685FF] text-[#F3F5F9]'
-                      : 'text-[#929BAA] hover:text-[#F3F5F9]'
+                      ? 'btn-glacier-primary text-white'
+                      : 'text-white/55 hover:text-white'
                   }`}
                 >
                   Group {gLetter} (<span className="font-mono tabular-nums">{gCount}</span>)
@@ -200,10 +203,10 @@ export const SlotRosterTable: React.FC<SlotRosterTableProps> = ({
           ) : (
             <button
               onClick={() => setActiveTab('confirmed')}
-              className={`h-7 px-3 rounded text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+              className={`h-9 px-4 rounded-xl text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
                 activeTab === 'confirmed'
-                  ? 'bg-[#191D25] text-[#F3F5F9] border border-[#292F3A]'
-                  : 'text-[#929BAA] hover:text-[#F3F5F9]'
+                  ? 'bg-white/[0.09] text-white border border-white/15'
+                  : 'text-white/55 hover:text-white'
               }`}
             >
               Confirmed Slots (<span className="font-mono tabular-nums">{confirmed.length}</span>)
@@ -212,127 +215,127 @@ export const SlotRosterTable: React.FC<SlotRosterTableProps> = ({
 
           <button
             onClick={() => setActiveTab('waitlist')}
-            className={`h-7 px-3 rounded text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+            className={`h-9 px-4 rounded-xl text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
               activeTab === 'waitlist'
-                ? 'bg-[#191D25] text-[#F3F5F9] border border-[#292F3A]'
-                : 'text-[#929BAA] hover:text-[#F3F5F9]'
+                ? 'bg-white/[0.09] text-white border border-white/15'
+                : 'text-white/55 hover:text-white'
             }`}
           >
             Waiting List (<span className="font-mono tabular-nums">{waitlist.length}</span>)
           </button>
         </div>
 
-        <div className="relative w-full sm:w-72">
-          <Search className="w-3.5 h-3.5 text-[#707A89] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+        <div className="relative w-full sm:w-80">
+          <Search className="w-4 h-4 text-white/40 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             type="text"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search team or player..."
-            className="w-full h-9 pl-8 pr-3 rounded-md bg-[#101319] border border-[#292F3A] text-[#F3F5F9] text-xs placeholder-[#707A89] focus:outline-hidden focus:border-[#6685FF]"
+            placeholder="Search team, captain, or player..."
+            className="w-full h-11 pl-10 pr-4 rounded-2xl esports-input text-xs placeholder-white/35"
           />
         </div>
       </div>
 
-      <div className="rounded-xl border border-[#292F3A] bg-[#14171D] overflow-hidden">
+      <div className="rounded-[28px] esports-card overflow-hidden">
         {filteredTeams.length === 0 ? (
-          <div className="py-16 px-6 text-center">
-            <div className="w-11 h-11 rounded-lg bg-[#191D25] border border-[#292F3A] flex items-center justify-center mx-auto mb-3 text-[#707A89]">
-              <Users className="w-5 h-5" />
+          <div className="py-20 px-6 text-center">
+            <div className="w-14 h-14 rounded-2xl bg-white/[0.03] border border-white/10 flex items-center justify-center mx-auto mb-4 text-[#38BDF8]">
+              <Users className="w-6 h-6" />
             </div>
-            <h3 className="font-display text-sm font-bold text-[#F3F5F9]">
-              No Teams Found
+            <h3 className="font-display text-lg font-bold text-white">
+              No Teams Registered Yet
             </h3>
-            <p className="text-xs text-[#929BAA] mt-1 max-w-sm mx-auto leading-relaxed">
+            <p className="text-xs sm:text-sm text-white/50 mt-2 max-w-md mx-auto leading-relaxed">
               {searchQuery
                 ? 'No registered team matches your search query.'
-                : 'No teams have registered yet. Teams can register in the Discord #registration channel or via the live bot.'}
+                : 'No teams have registered yet. Teams can register in the Discord #registration channel or via the Register Team button above.'}
             </p>
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-[#101217] text-[11px] font-semibold text-[#929BAA] border-b border-[#292F3A]">
+              <thead className="bg-white/[0.02] text-[11px] font-semibold text-white/45 border-b border-white/[0.07] uppercase tracking-wider">
                 <tr>
-                  <th className="py-3 px-4 w-24">Slot</th>
-                  <th className="py-3 px-4 w-28">Group</th>
-                  <th className="py-3 px-4 w-28">Region</th>
-                  <th className="py-3 px-4">Team Name</th>
-                  <th className="py-3 px-4">Captain</th>
-                  <th className="py-3 px-4">Contact (WhatsApp)</th>
-                  <th className="py-3 px-4">Verified Roster Tags</th>
-                  <th className="py-3 px-4">Team Role & Private VC</th>
-                  <th className="py-3 px-4 w-28">Registered</th>
-                  <th className="py-3 px-4 text-right w-28">Actions</th>
+                  <th className="py-4 px-5 w-24">Slot</th>
+                  <th className="py-4 px-5 w-28">Group</th>
+                  <th className="py-4 px-5 w-28">Region</th>
+                  <th className="py-4 px-5">Team Name</th>
+                  <th className="py-4 px-5">Captain</th>
+                  <th className="py-4 px-5">Contact (WhatsApp)</th>
+                  <th className="py-4 px-5">Verified Roster Tags</th>
+                  <th className="py-4 px-5">Team Role &amp; Private VC</th>
+                  <th className="py-4 px-5 w-28">Registered</th>
+                  <th className="py-4 px-5 text-right w-28">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[#292F3A]">
+              <tbody className="divide-y divide-white/[0.06]">
                 {filteredTeams.map(team => (
                   <tr
                     key={team.id}
-                    className="hover:bg-[#191D25]/70 transition-colors group"
+                    className="hover:bg-white/[0.02] transition-colors group"
                   >
-                    <td className="py-3 px-4 whitespace-nowrap">
+                    <td className="py-4 px-5 whitespace-nowrap">
                       {team.isWaitlist ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono tabular-nums font-semibold bg-[#F0B75A]/10 text-[#F0B75A] border border-[#F0B75A]/30">
+                        <span className="inline-flex items-center px-3 py-1 rounded-lg text-[11px] font-mono tabular-nums font-bold bg-[#F59E0B]/10 text-[#F59E0B] border border-[#F59E0B]/25">
                           WL #{team.slotNumber}
                         </span>
                       ) : (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono tabular-nums font-semibold bg-[#6685FF]/15 text-[#A7C7FF] border border-[#6685FF]/30">
+                        <span className="inline-flex items-center px-3 py-1 rounded-lg text-[11px] font-mono tabular-nums font-bold bg-[#38BDF8]/12 text-[#7DD3FC] border border-[#38BDF8]/30">
                           Slot #{team.slotNumber < 10 ? `0${team.slotNumber}` : team.slotNumber}
                         </span>
                       )}
                     </td>
 
-                    <td className="py-3 px-4 whitespace-nowrap font-mono text-[11px]">
+                    <td className="py-4 px-5 whitespace-nowrap font-mono text-[11px]">
                       {team.isWaitlist ? (
-                        <span className="text-[#707A89]">—</span>
+                        <span className="text-white/30">—</span>
                       ) : (
-                        <span className="text-[#929BAA] font-medium">
+                        <span className="text-white/80 font-medium">
                           {team.group || 'Group A'}
                         </span>
                       )}
                     </td>
 
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-[#101319] border border-[#292F3A] text-[#F3F5F9]">
+                    <td className="py-4 px-5 whitespace-nowrap">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-white/[0.03] border border-white/[0.08] text-white/90">
                         {team.region === 'Pakistan' ? '🇵🇰 Pakistan' : team.region === 'Bangladesh' ? '🇧🇩 Bangladesh' : '🇮🇳 India'}
                       </span>
                     </td>
 
-                    <td className="py-3 px-4 font-semibold text-[#F3F5F9] whitespace-nowrap">
+                    <td className="py-4 px-5 font-display font-bold text-sm text-white whitespace-nowrap">
                       {team.teamName}
                     </td>
 
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <div className="flex items-center gap-2">
+                    <td className="py-4 px-5 whitespace-nowrap">
+                      <div className="flex items-center gap-2.5">
                         <img
                           src={team.captain.avatar}
                           alt=""
-                          className="w-5 h-5 rounded-full bg-[#191D25] border border-[#292F3A] shrink-0"
+                          className="w-6 h-6 rounded-full bg-black border border-white/15 shrink-0"
                           referrerPolicy="no-referrer"
                         />
-                        <span className="text-xs font-medium text-[#F3F5F9]">
+                        <span className="text-xs font-medium text-white/90">
                           @{team.captain.displayName}
                         </span>
                       </div>
                     </td>
 
-                    <td className="py-3 px-4 whitespace-nowrap">
+                    <td className="py-4 px-5 whitespace-nowrap">
                       <div className="flex flex-col gap-0.5 font-mono text-[11px]">
-                        <span className="text-[#31D69A] flex items-center gap-1 font-medium">
-                          <Phone className="w-2.5 h-2.5 shrink-0" />
+                        <span className="text-[#10B981] flex items-center gap-1.5 font-medium">
+                          <Phone className="w-3 h-3 shrink-0" />
                           {team.whatsappNumber1 || '—'}
                         </span>
                       </div>
                     </td>
 
-                    <td className="py-3 px-4">
+                    <td className="py-4 px-5">
                       <div className="flex flex-wrap gap-1.5 max-w-md">
                         {team.players.map(player => (
                           <span
                             key={player.id}
-                            className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-[#101319] text-[#929BAA] border border-[#292F3A]"
+                            className="inline-flex items-center px-2.5 py-1 rounded-lg text-[11px] font-mono bg-white/[0.03] text-white/80 border border-white/[0.08]"
                             title={`ID: ${player.id}`}
                           >
                             @{player.displayName}
@@ -341,34 +344,34 @@ export const SlotRosterTable: React.FC<SlotRosterTableProps> = ({
                       </div>
                     </td>
 
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <div className="flex items-center justify-between gap-2.5">
+                    <td className="py-4 px-5 whitespace-nowrap">
+                      <div className="flex items-center justify-between gap-3">
                         <div className="flex flex-col gap-0.5 text-[11px] font-mono">
-                          <span className="text-[#A7C7FF] font-semibold">
+                          <span className="text-[#38BDF8] font-semibold">
                             @{team.teamRoleName || team.teamName}
                           </span>
-                          <span className="text-[#929BAA]">
+                          <span className="text-white/45">
                             📁 {team.teamCategoryName || team.teamName} · 🔊 {team.teamVoiceChannelName || team.teamName}
                           </span>
                         </div>
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#248046]/15 border border-[#248046]/30 text-[#31D69A] text-[11px] font-mono shrink-0">
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#10B981]/10 border border-[#10B981]/25 text-[#10B981] text-[11px] font-mono shrink-0">
                           <Volume2 className="w-3 h-3" />
                           <span>VC Ready</span>
                         </span>
                       </div>
                     </td>
 
-                    <td className="py-3 px-4 text-xs text-[#707A89] whitespace-nowrap font-mono tabular-nums">
+                    <td className="py-4 px-5 text-xs text-white/45 whitespace-nowrap font-mono tabular-nums">
                       {new Date(team.registeredAt).toLocaleTimeString([], {
                         hour: '2-digit',
                         minute: '2-digit'
                       })}
                     </td>
 
-                    <td className="py-3 px-4 text-right whitespace-nowrap">
+                    <td className="py-4 px-5 text-right whitespace-nowrap">
                       <button
                         onClick={() => onKickTeam(team.id)}
-                        className="h-7 px-2.5 rounded bg-[#FF626C]/10 hover:bg-[#FF626C]/20 text-[#FF626C] border border-[#FF626C]/30 text-[11px] font-semibold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                        className="h-8 px-3 rounded-xl bg-[#EF4444]/10 hover:bg-[#EF4444]/20 text-[#F87171] border border-[#EF4444]/25 text-[11px] font-semibold transition-all inline-flex items-center gap-1.5 cursor-pointer"
                         title="Disqualify/Kick Team (Frees slot and promotes next in waitlist)"
                       >
                         <Trash2 className="w-3 h-3" />
@@ -395,3 +398,4 @@ export const SlotRosterTable: React.FC<SlotRosterTableProps> = ({
     </div>
   );
 };
+

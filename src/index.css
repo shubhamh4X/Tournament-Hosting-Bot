@@ -3,23 +3,217 @@
 @layer base {
   :root {
     color-scheme: dark;
-    font-family: 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-inter: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --font-outfit: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+    --background: #000000;
+    --foreground: #ffffff;
+    font-family: var(--font-inter);
+  }
+
+  html,
+  body {
+    background-color: #000000;
+    color: #FFFFFF;
+    overflow-x: hidden;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   body {
-    background-color: #0A0B0E;
-    color: #F3F5F9;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    background-image:
+      radial-gradient(ellipse 900px 460px at 50% -4%, rgba(56, 189, 248, 0.13), rgba(14, 165, 233, 0.05) 48%, transparent 78%),
+      radial-gradient(circle 620px at 85% 24%, rgba(186, 230, 253, 0.045), transparent 72%),
+      radial-gradient(circle 620px at 14% 58%, rgba(14, 165, 233, 0.04), transparent 72%),
+      radial-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 100% 100%, 28px 28px;
+    background-attachment: fixed;
   }
 
   h1, h2, h3, h4, .font-display {
-    font-family: 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    letter-spacing: -0.02em;
+    font-family: var(--font-outfit);
+    letter-spacing: -0.03em;
   }
 
   code, pre, kbd, .font-mono {
     font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     font-variant-numeric: tabular-nums;
+  }
+}
+
+@keyframes hero-gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.hero-gradient-text {
+  background: linear-gradient(
+    95deg,
+    #FFFFFF 0%,
+    #E0F2FE 22%,
+    #7DD3FC 45%,
+    #38BDF8 62%,
+    #E0F2FE 82%,
+    #FFFFFF 100%
+  );
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: hero-gradient-shift 8s ease-in-out infinite;
+}
+
+.eyebrow-label {
+  font-family: var(--font-outfit);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #7DD3FC;
+}
+
+@keyframes marquee-ltr {
+  0% {
+    transform: translateX(-50%);
+  }
+  100% {
+    transform: translateX(0%);
+  }
+}
+
+.glacier-marquee-mask {
+  mask-image: linear-gradient(to right, transparent 0%, black 14%, black 86%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 14%, black 86%, transparent 100%);
+}
+
+.glacier-marquee-track {
+  display: flex;
+  width: max-content;
+  animation: marquee-ltr 38s linear infinite;
+  will-change: transform;
+}
+
+.glacier-marquee-track:hover {
+  animation-play-state: paused;
+}
+
+.nav-glass-dock {
+  background: linear-gradient(180deg, rgba(16, 19, 25, 0.92) 0%, rgba(11, 13, 18, 0.94) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow:
+    0 12px 34px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+}
+
+.gateway-hero-panel {
+  background: linear-gradient(165deg, rgba(13, 21, 33, 0.74) 0%, rgba(7, 10, 16, 0.9) 55%, rgba(5, 7, 11, 0.94) 100%);
+  border: 1px solid rgba(56, 189, 248, 0.16);
+  box-shadow:
+    0 28px 70px -16px rgba(0, 0, 0, 0.8),
+    inset 0 1px 0 0 rgba(186, 230, 253, 0.1);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.esports-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.024) 0%, rgba(255, 255, 255, 0.012) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  box-shadow:
+    0 24px 60px -16px rgba(0, 0, 0, 0.72),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.055);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.esports-card-sub {
+  background: rgba(255, 255, 255, 0.016);
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.18s ease, background-color 0.18s ease;
+}
+
+.esports-card-sub:hover {
+  border-color: rgba(56, 189, 248, 0.28);
+  background: rgba(56, 189, 248, 0.035);
+  transform: translateY(-1px);
+}
+
+.esports-input {
+  background-color: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.095);
+  color: #FFFFFF;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
+}
+
+.esports-input:hover:not(:focus) {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.esports-input:focus {
+  outline: none;
+  border-color: rgba(56, 189, 248, 0.55);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.btn-glacier-primary {
+  background: linear-gradient(135deg, #0EA5E9 0%, #0284C7 55%, #1D4ED8 100%);
+  color: #FFFFFF;
+  box-shadow:
+    0 8px 24px -6px rgba(14, 165, 233, 0.38),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.24);
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.18s ease, filter 0.18s ease;
+}
+
+.btn-glacier-primary:hover:not(:disabled) {
+  filter: brightness(1.07);
+  box-shadow:
+    0 12px 28px -6px rgba(56, 189, 248, 0.46),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+.btn-glacier-primary:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-glacier-secondary {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #FFFFFF;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.18s ease, border-color 0.18s ease;
+}
+
+.btn-glacier-secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.075);
+  border-color: rgba(125, 211, 252, 0.25);
+  transform: translateY(-1px);
+}
+
+.btn-glacier-secondary:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-gradient-text,
+  .glacier-marquee-track {
+    animation: none !important;
+  }
+
+  .esports-card-sub,
+  .btn-glacier-primary,
+  .btn-glacier-secondary,
+  .esports-input {
+    transition: none !important;
+    transform: none !important;
   }
 }
 
@@ -29,14 +223,15 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: #0A0B0E;
+  background: #000000;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #292F3A;
-  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #3A4252;
+  background: rgba(255, 255, 255, 0.24);
 }
+
