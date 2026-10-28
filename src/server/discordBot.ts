@@ -24,6 +24,12 @@ import {
   UserSelectMenuBuilder,
   ModalSubmitInteraction
 } from 'discord.js';
+import {
+  joinVoiceChannel,
+  getVoiceConnection,
+  VoiceConnectionStatus,
+  entersState
+} from '@discordjs/voice';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -156,12 +162,15 @@ class DiscordBotManager {
   private slotListUpdateTimers = new Map<string, NodeJS.Timeout>();
   private cleanupTimers = new Set<NodeJS.Timeout>();
   private missingManageMessagesLogged = new Set<string>();
+  private stayVoiceChannels = new Map<string, string>(); // guildId -> channelId
+  private isReconnectingVoice = new Map<string, boolean>();
 
   public getPersistedBotData() {
     return {
       blacklist: this.blacklist,
       slotListMessageIds: Object.fromEntries(this.slotListMessageIds),
-      regDetailsMessageIds: Object.fromEntries(this.regDetailsMessageIds)
+      regDetailsMessageIds: Object.fromEntries(this.regDetailsMessageIds),
+      stayVoiceChannels: Object.fromEntries(this.stayVoiceChannels)
     };
   }
 
@@ -179,6 +188,13 @@ class DiscordBotManager {
       this.regDetailsMessageIds = new Map(
         Object.entries(data.regDetailsMessageIds).filter(([, v]) => Array.isArray(v)) as [string, string[]][]
       );
+    }
+    if (data.stayVoiceChannels && typeof data.stayVoiceChannels === 'object') {
+      for (const [gId, chId] of Object.entries(data.stayVoiceChannels)) {
+        if (typeof chId === 'string' && chId.trim().length > 0) {
+          this.stayVoiceChannels.set(gId, chId.trim());
+        }
+      }
     }
   }
 
@@ -2962,7 +2978,8 @@ class DiscordBotManager {
           GatewayIntentBits.Guilds,
           GatewayIntentBits.GuildMessages,
           GatewayIntentBits.MessageContent,
-          GatewayIntentBits.GuildMembers
+          GatewayIntentBits.GuildMembers,
+          GatewayIntentBits.GuildVoiceStates
         ],
         presence: {
           activities: [{ name: 'Glacier Cup', type: ActivityType.Watching }],
@@ -3107,6 +3124,138 @@ class DiscordBotManager {
     }
   }
 
+  public async init247VoiceChannels(): Promise<void> {
+    if (!this.client || !this.client.isReady()) return;
+    const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    const envChannelId = process.env.STAY_VOICE_CHANNEL_ID || process.env.VOICE_CHANNEL_ID || process.env.VC_247_ID;
+
+    if (rootConfig?.stayVoiceChannels && typeof rootConfig.stayVoiceChannels === 'object') {
+      for (const [gId, chId] of Object.entries(rootConfig.stayVoiceChannels)) {
+        if (typeof chId === 'string' && chId.trim().length > 0) {
+          this.stayVoiceChannels.set(gId, chId.trim());
+        }
+      }
+    }
+
+    if (envChannelId && envChannelId.trim().length > 0) {
+      const cleanEnvId = envChannelId.trim();
+      for (const [, guild] of this.client.guilds.cache) {
+        const found = guild.channels.cache.get(cleanEnvId);
+        if (found && (found.type === ChannelType.GuildVoice || found.type === ChannelType.GuildStageVoice)) {
+          this.stayVoiceChannels.set(guild.id, cleanEnvId);
+          break;
+        }
+      }
+    }
+
+    for (const [guildId, channelId] of this.stayVoiceChannels.entries()) {
+      await this.connectTo247Voice(guildId, channelId).catch(() => {});
+    }
+  }
+
+  public async connectTo247Voice(
+    guildId: string,
+    channelId: string
+  ): Promise<{ success: boolean; channelName?: string; error?: string }> {
+    if (!this.client || !this.client.isReady()) {
+      return { success: false, error: 'Discord client is not ready' };
+    }
+    const guild = this.client.guilds.cache.get(guildId);
+    if (!guild) {
+      return { success: false, error: 'Guild not found or bot lacks access' };
+    }
+    const channel = guild.channels.cache.get(channelId);
+    if (!channel || (channel.type !== ChannelType.GuildVoice && channel.type !== ChannelType.GuildStageVoice)) {
+      return { success: false, error: 'Valid voice channel not found' };
+    }
+
+    const botMember = guild.members.me;
+    if (botMember && !botMember.permissionsIn(channel).has(PermissionsBitField.Flags.Connect)) {
+      return { success: false, error: `Bot lacks CONNECT permission in #${channel.name}` };
+    }
+
+    try {
+      this.stayVoiceChannels.set(guildId, channelId);
+
+      const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+      if (rootConfig) {
+        if (!rootConfig.stayVoiceChannels) rootConfig.stayVoiceChannels = {};
+        rootConfig.stayVoiceChannels[guildId] = channelId;
+        if (this.onConfigUpdated) this.onConfigUpdated();
+      }
+
+      const existingConnection = getVoiceConnection(guildId);
+      if (existingConnection && existingConnection.joinConfig.channelId === channelId) {
+        return { success: true, channelName: channel.name };
+      }
+
+      const connection = joinVoiceChannel({
+        channelId: channel.id,
+        guildId: guild.id,
+        adapterCreator: guild.voiceAdapterCreator as any,
+        selfDeaf: true,
+        selfMute: true
+      });
+
+      connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        try {
+          await Promise.race([
+            entersState(connection, VoiceConnectionStatus.Signalling, 5000),
+            entersState(connection, VoiceConnectionStatus.Connecting, 5000)
+          ]);
+        } catch {
+          if (this.stayVoiceChannels.get(guildId) === channelId) {
+            if (!this.isReconnectingVoice.get(guildId)) {
+              this.isReconnectingVoice.set(guildId, true);
+              this.logEvent('warn', `Voice connection dropped in "${guild.name}". Auto-rejoining 24/7 lobby #${channel.name}...`, guild.name);
+              setTimeout(() => {
+                this.isReconnectingVoice.delete(guildId);
+                this.connectTo247Voice(guildId, channelId).catch(() => {});
+              }, 3000);
+            }
+          }
+        }
+      });
+
+      this.logEvent('success', `🔊 Bot connected 24/7 to voice channel "${channel.name}" in "${guild.name}".`, guild.name);
+      return { success: true, channelName: channel.name };
+    } catch (err: any) {
+      this.logEvent('error', `Failed to join voice channel "${channel.name}": ${err.message}`, guild.name);
+      return { success: false, error: err.message };
+    }
+  }
+
+  public leave247Voice(guildId: string): { success: boolean; message: string } {
+    this.stayVoiceChannels.delete(guildId);
+    const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    if (rootConfig?.stayVoiceChannels) {
+      delete rootConfig.stayVoiceChannels[guildId];
+      if (this.onConfigUpdated) this.onConfigUpdated();
+    }
+    const connection = getVoiceConnection(guildId);
+    if (connection) {
+      connection.destroy();
+      const guild = this.client?.guilds.cache.get(guildId);
+      this.logEvent('info', `Disconnected 24/7 voice connection in "${guild?.name || guildId}".`, guild?.name);
+      return { success: true, message: 'Successfully left voice channel and disabled 24/7 connection.' };
+    }
+    return { success: true, message: '24/7 voice connection disabled (was not connected).' };
+  }
+
+  public get247VoiceStatus(guildId: string): { is247: boolean; channelId?: string; channelName?: string; isConnected: boolean } {
+    const channelId = this.stayVoiceChannels.get(guildId);
+    const connection = getVoiceConnection(guildId);
+    const guild = this.client?.guilds.cache.get(guildId);
+    const channel = channelId && guild ? guild.channels.cache.get(channelId) : null;
+
+    return {
+      is247: Boolean(channelId),
+      channelId,
+      channelName: channel?.name,
+      isConnected: Boolean(connection && connection.state.status === VoiceConnectionStatus.Ready)
+    };
+  }
+
   private setupListeners() {
     if (!this.client) return;
 
@@ -3159,6 +3308,7 @@ class DiscordBotManager {
       await this.registerSlashCommands(false);
       this.reconcileActiveTournaments();
       await this.cleanOrphanChannels().catch(() => {});
+      await this.init247VoiceChannels().catch(() => {});
 
       this.client?.guilds.cache.forEach(guild => {
         guild.members.me?.setNickname('FFA-Manager').catch(() => {});
@@ -3268,6 +3418,23 @@ class DiscordBotManager {
     this.client.on('guildDelete', (guild) => {
       this.logEvent('warn', `Bot removed from server: "${guild.name}"`, guild.name);
       this.refreshGuilds();
+    });
+
+    this.client.on('voiceStateUpdate', (oldState, newState) => {
+      try {
+        if (newState.id === this.client?.user?.id) {
+          if (!newState.channelId) {
+            const targetVcId = this.stayVoiceChannels.get(oldState.guild.id);
+            if (targetVcId) {
+              this.logEvent('warn', `Bot was disconnected from voice in "${oldState.guild.name}". Auto-reconnecting 24/7 lobby in 3 seconds...`, oldState.guild.name);
+              setTimeout(() => {
+                this.connectTo247Voice(oldState.guild.id, targetVcId).catch(() => {});
+              }, 3000);
+            }
+          }
+        }
+      } catch {
+      }
     });
 
     this.client.on('interactionCreate', async (interaction) => {
@@ -3852,6 +4019,66 @@ class DiscordBotManager {
     if (cmd === 'active-tournament' || cmd === 'activetournament') {
       const activeEmbed = this.buildActiveTournamentEmbed(message.guild, message.channel.id);
       return message.reply({ embeds: [activeEmbed] });
+    }
+
+    if (cmd === '247' || cmd === 'joinvc' || cmd === 'stayvc' || cmd === 'leavevc') {
+      if (!isStaff) {
+        return message.reply('❌ You need `Manage Channels` or `Administrator` permission to configure 24/7 Voice.');
+      }
+      if (!message.guild) return message.reply('❌ This command can only be used inside a Discord server.');
+
+      const subAction = (cmd === 'leavevc' ? 'leave' : (args[0] || '').toLowerCase());
+      if (subAction === 'leave' || subAction === 'stop' || subAction === 'disconnect') {
+        const res = this.leave247Voice(message.guild.id);
+        return message.reply(`🔇 ${res.message}`);
+      }
+
+      if (subAction === 'status' || (!args[0] && cmd !== 'joinvc')) {
+        const status = this.get247VoiceStatus(message.guild.id);
+        const embed = new EmbedBuilder()
+          .setTitle('🔊 24/7 Voice Channel Status')
+          .setColor(status.isConnected ? 0x57F287 : 0xED4245)
+          .setDescription(
+            status.is247
+              ? `• **Target Channel:** <#${status.channelId}> (\`${status.channelName || status.channelId}\`)\n` +
+                `• **Status:** ${status.isConnected ? '🟢 **Connected & Staying 24/7**' : '🟡 **Reconnecting...**'}\n` +
+                `• **Auto-Reconnect:** Active on server reboots and disconnects`
+              : '• **Status:** 🔴 **Disabled**\nUse `!247 join <#channel>` or `/voice-247` to activate.'
+          )
+          .setTimestamp();
+        return message.reply({ embeds: [embed] });
+      }
+
+      let targetVc: any = null;
+      const rawArg = subAction === 'join' ? args.slice(1).join(' ') : args.join(' ');
+      if (rawArg) {
+        const idMatch = rawArg.match(/^<#(\d+)>$/) || rawArg.match(/^(\d{15,20})$/);
+        const searchId = idMatch ? idMatch[1] : null;
+        if (searchId) {
+          targetVc = message.guild.channels.cache.get(searchId);
+        } else {
+          targetVc = message.guild.channels.cache.find(
+            (c: any) =>
+              (c.type === ChannelType.GuildVoice || c.type === ChannelType.GuildStageVoice) &&
+              c.name.toLowerCase().includes(rawArg.toLowerCase())
+          );
+        }
+      } else {
+        const authorVoice = message.member?.voice?.channel;
+        if (authorVoice) {
+          targetVc = authorVoice;
+        }
+      }
+
+      if (!targetVc || (targetVc.type !== ChannelType.GuildVoice && targetVc.type !== ChannelType.GuildStageVoice)) {
+        return message.reply('❌ Please specify a valid voice channel (e.g. `!247 join #General` or join a voice channel first).');
+      }
+
+      const res = await this.connectTo247Voice(message.guild.id, targetVc.id);
+      if (!res.success) {
+        return message.reply(`❌ Could not join voice channel: **${res.error}**`);
+      }
+      return message.reply(`🔊 **Bot locked 24/7 into <#${targetVc.id}>**! It will automatically reconnect if disconnected or if the server restarts.`);
     }
 
     if (cmd === 'help' || cmd === 'commands') {
@@ -6344,6 +6571,30 @@ class DiscordBotManager {
         description: 'Post the interactive tournament registration embed and Register Your Team button in #registration'
       },
       {
+        name: 'voice-247',
+        description: 'Configure bot to join and stay inside a voice channel 24/7 permanently',
+        options: [
+          {
+            name: 'action',
+            description: 'Action: join, leave, or status',
+            type: ApplicationCommandOptionType.String,
+            required: true,
+            choices: [
+              { name: 'join (Stay 24/7 in selected Voice Channel)', value: 'join' },
+              { name: 'leave (Leave Voice Channel & Disable 24/7)', value: 'leave' },
+              { name: 'status (Check current 24/7 Voice Lobby status)', value: 'status' }
+            ]
+          },
+          {
+            name: 'channel',
+            description: 'Voice channel to join 24/7 (Required if action is join)',
+            type: ApplicationCommandOptionType.Channel,
+            channelTypes: [ChannelType.GuildVoice, ChannelType.GuildStageVoice],
+            required: false
+          }
+        ]
+      },
+      {
         name: 'help',
         description: 'View all FFA | Glacier Cup Manager™ slash and prefix commands'
       }
@@ -7122,6 +7373,71 @@ class DiscordBotManager {
       return interaction.editReply(panelPayload);
     }
 
+    if (commandName === 'voice-247') {
+      if (!isStaff) {
+        return interaction.editReply('❌ You need `Manage Channels` or `Administrator` permission to configure 24/7 Voice.');
+      }
+      if (!interaction.guildId) {
+        return interaction.editReply('❌ This command can only be used inside a Discord server.');
+      }
+      const action = interaction.options.getString('action', true);
+      const targetChannel = interaction.options.getChannel('channel');
+
+      if (action === 'status') {
+        const status = this.get247VoiceStatus(interaction.guildId);
+        const embed = new EmbedBuilder()
+          .setTitle('🔊 24/7 Voice Channel Status')
+          .setColor(status.isConnected ? 0x57F287 : 0xED4245)
+          .setDescription(
+            status.is247
+              ? `• **Target Channel:** <#${status.channelId}> (\`${status.channelName || status.channelId}\`)\n` +
+                `• **Status:** ${status.isConnected ? '🟢 **Connected & Staying 24/7**' : '🟡 **Reconnecting...**'}\n` +
+                `• **Auto-Reconnect:** Enabled (Rejoins on server reboot or disconnect)`
+              : '• **Status:** 🔴 **Disabled** (Bot is not configured to stay in any voice channel 24/7).\n\nUse `/voice-247 action:join channel:#lobby` to enable.'
+          )
+          .setFooter({ text: 'Powered by FFA | Glacier Cup Manager™' })
+          .setTimestamp();
+        return interaction.editReply({ embeds: [embed] });
+      }
+
+      if (action === 'leave') {
+        const res = this.leave247Voice(interaction.guildId);
+        const embed = new EmbedBuilder()
+          .setTitle('🔇 24/7 Voice Channel Disabled')
+          .setColor(0xFEE75C)
+          .setDescription(res.message)
+          .setTimestamp();
+        return interaction.editReply({ embeds: [embed] });
+      }
+
+      if (action === 'join') {
+        if (!targetChannel) {
+          return interaction.editReply('❌ Please select a voice channel for the bot to join and stay 24/7.');
+        }
+        if (targetChannel.type !== ChannelType.GuildVoice && targetChannel.type !== ChannelType.GuildStageVoice) {
+          return interaction.editReply('❌ Selected channel must be a Voice or Stage channel.');
+        }
+
+        const res = await this.connectTo247Voice(interaction.guildId, targetChannel.id);
+        if (!res.success) {
+          return interaction.editReply(`❌ Failed to join voice channel: **${res.error}**`);
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle('🔊 24/7 Voice Channel Locked & Active')
+          .setColor(0x57F287)
+          .setDescription(
+            `Successfully joined **<#${targetChannel.id}>**!\n\n` +
+            `• **24/7 Stay Mode:** 🟢 Active\n` +
+            `• **Self-Deafened:** Yes (Minimizes bandwidth & prevents idle kick)\n` +
+            `• **Auto-Reconnect:** Active (Will automatically rejoin on restarts, disconnects, or kicks)`
+          )
+          .setFooter({ text: 'Use /voice-247 action:leave to disconnect anytime' })
+          .setTimestamp();
+        return interaction.editReply({ embeds: [embed] });
+      }
+    }
+
     if (commandName === 'help') {
       const helpEmbed = new EmbedBuilder()
         .setTitle(`${EMOJI.admin} FFA | Glacier Cup Manager™ — Full Command Suite`)
@@ -7130,7 +7446,7 @@ class DiscordBotManager {
         .addFields(
           {
             name: `${EMOJI.golden} Tournament Setup & Channels`,
-            value: '`/setup [slots] [tags] [groups] [title]` *(up to 500 slots, `groups` = teams/group; starts registration immediately)*\n`/active-tournament` *(Check if any tournament is currently active in the server)*\n`/setup_registration_panel`\n`/create tournament`\n`/stop-registration [reason]`\n`/delete slot <slot>` • `/delete tournament`',
+            value: '`/setup [slots] [tags] [groups] [title]` *(up to 500 slots, `groups` = teams/group; starts registration immediately)*\n`/active-tournament` *(Check if any tournament is currently active in the server)*\n`/setup_registration_panel`\n`/voice-247 <action> [channel]` *(Stay in VC 24/7)*\n`/create tournament`\n`/stop-registration [reason]`\n`/delete slot <slot>` • `/delete tournament`',
             inline: false
           },
           {

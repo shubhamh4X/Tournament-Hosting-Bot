@@ -243,6 +243,9 @@ async function startServer() {
   };
 
   const getConfiguredToken = (): string => {
+    if (process.env.DISCORD_BOT_DISABLED === 'true' || process.env.DISABLE_LOCAL_BOT === 'true') {
+      return '';
+    }
     return (process.env.DISCORD_TOKEN || process.env.BOT_TOKEN || '').trim();
   };
 
@@ -875,6 +878,51 @@ async function startServer() {
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message || 'Server error while sending embed' });
+    }
+  });
+
+  app.get('/api/bot/voice-247', (req: Request, res: Response) => {
+    try {
+      const guildId = (req.query.guildId as string) || discordBot.getStatus().guilds[0]?.id;
+      if (!guildId) {
+        return res.json({ success: true, is247: false, isConnected: false });
+      }
+      const status = discordBot.get247VoiceStatus(guildId);
+      res.json({ success: true, ...status });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post('/api/bot/voice-247/join', async (req: Request, res: Response) => {
+    try {
+      const { guildId, channelId } = req.body;
+      const targetGuildId = guildId || discordBot.getStatus().guilds[0]?.id;
+      if (!targetGuildId || !channelId) {
+        return res.status(400).json({ success: false, error: 'guildId and channelId are required' });
+      }
+      const result = await discordBot.connectTo247Voice(targetGuildId, channelId);
+      if (result.success) {
+        saveTournamentState();
+      }
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post('/api/bot/voice-247/leave', (req: Request, res: Response) => {
+    try {
+      const { guildId } = req.body;
+      const targetGuildId = guildId || discordBot.getStatus().guilds[0]?.id;
+      if (!targetGuildId) {
+        return res.status(400).json({ success: false, error: 'guildId is required' });
+      }
+      const result = discordBot.leave247Voice(targetGuildId);
+      saveTournamentState();
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
     }
   });
 
