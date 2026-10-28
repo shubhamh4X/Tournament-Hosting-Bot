@@ -5,7 +5,9 @@ import {
   sanitizeWhatsAppNumber,
   getRegionCountryCode,
   isValidTournamentRegion,
-  VALID_TOURNAMENT_REGIONS
+  VALID_TOURNAMENT_REGIONS,
+  normalizeDiscordUserId,
+  getTeamMemberIds
 } from '../utils/tagParser';
 import {
   X,
@@ -117,30 +119,36 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
       return false;
     }
 
-    const filledPlayers = playerTags.map(p => p.trim()).filter(Boolean);
+    const filledPlayers = playerTags.slice(0, reqTags).map(p => p.trim()).filter(Boolean);
     if (filledPlayers.length !== reqTags) {
       setValidationError(`Exactly ${reqTags} players are required as configured in tournament setup (no extra or missing players).`);
       return false;
     }
 
-    const lowerPlayers = filledPlayers.map(p => p.toLowerCase().replace(/^@/, ''));
-    const uniquePlayers = new Set(lowerPlayers);
-    if (uniquePlayers.size !== lowerPlayers.length) {
-      setValidationError('Duplicate player tags detected within the same team. Every player tag must be unique.');
+    const normalizedIds = filledPlayers.map(p => normalizeDiscordUserId(p));
+    if (normalizedIds.some(id => !id)) {
+      setValidationError('Please enter a valid Discord User ID or mention for every player.');
       return false;
     }
 
-    if (config.prohibitDuplicateTags) {
-      for (const p of filledPlayers) {
-        const pLower = p.toLowerCase().replace(/^@/, '');
-        for (const team of existingTeams) {
-          const playerMatch = team.players.some(
-            pl => pl.displayName.toLowerCase().replace(/^@/, '') === pLower || pl.username.toLowerCase() === pLower
+    const uniquePlayers = new Set(normalizedIds);
+    if (uniquePlayers.size !== normalizedIds.length) {
+      setValidationError('Duplicate member IDs detected within the same team. Every player on a team must be a unique Discord member.');
+      return false;
+    }
+
+    for (let i = 0; i < normalizedIds.length; i++) {
+      const memberId = normalizedIds[i];
+      const rawLabel = filledPlayers[i];
+      for (const team of existingTeams) {
+        const existingMemberIds = getTeamMemberIds(team);
+        if (existingMemberIds.has(memberId)) {
+          const slotDesc = team.isWaitlist ? `Waitlist #${team.slotNumber}` : `Slot #${team.slotNumber}`;
+          const existingRole = normalizeDiscordUserId(team.captain?.id) === memberId ? 'captain' : 'player';
+          setValidationError(
+            `Member "${rawLabel}" is already registered as ${existingRole} in team "${team.teamName}" (${slotDesc}). Each Discord member can belong to only one team until their existing registration is deleted.`
           );
-          if (playerMatch) {
-            setValidationError(`Player "${p}" is already registered in team "${team.teamName}". Multi-team registration is prohibited!`);
-            return false;
-          }
+          return false;
         }
       }
     }
@@ -163,12 +171,16 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
     const sanitizedWa1 = sanitizeWhatsAppNumber(whatsappNumber1, region);
     const filledPlayers = playerTags.slice(0, reqTags).map(p => p.trim()).filter(Boolean);
 
-    const playersList = filledPlayers.map((p, idx) => ({
-      id: `ply-${Date.now()}-${idx + 1}`,
-      username: p.toLowerCase().replace(/[^a-z0-9_]/g, '') || `player${idx + 1}`,
-      displayName: p.replace(/^@/, ''),
-      avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${p}`
-    }));
+    const playersList = filledPlayers.map((p, idx) => {
+      const normalizedId = normalizeDiscordUserId(p);
+      const cleanDisplay = p.replace(/^<@!?(\d+)>$/, '$1').replace(/^@/, '').trim();
+      return {
+        id: normalizedId,
+        username: cleanDisplay.toLowerCase().replace(/[^a-z0-9_.-]/g, '') || `player${idx + 1}`,
+        displayName: cleanDisplay || `Player ${idx + 1}`,
+        avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(normalizedId)}`
+      };
+    });
 
     const captainUser = playersList[0];
 

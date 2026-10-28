@@ -140,7 +140,7 @@ class DiscordBotManager {
   >();
   private operationQueue: Promise<any> = Promise.resolve();
   private inFlightPlayerIds = new Set<string>();
-  private slotListMessageIds = new Map<string, string>();
+  private slotListMessageIds = new Map<string, string[]>();
   private regDetailsMessageIds = new Map<string, string[]>();
   private slotListUpdateTimers = new Map<string, NodeJS.Timeout>();
   private cleanupTimers = new Set<NodeJS.Timeout>();
@@ -150,6 +150,380 @@ class DiscordBotManager {
     const next = this.operationQueue.then(() => task());
     this.operationQueue = next.catch(() => {});
     return next;
+  }
+
+  public normalizeMemberId(raw: unknown): string {
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return String(raw);
+    }
+    if (typeof raw !== 'string') return '';
+    const trimmed = raw.trim();
+    const mentionMatch = trimmed.match(/^<@!?(\d+)>$/);
+    if (mentionMatch) return mentionMatch[1];
+    return trimmed.replace(/^@/, '').trim();
+  }
+
+  public getTeamMemberIds(team: any): Set<string> {
+    const ids = new Set<string>();
+    if (!team) return ids;
+    const capId = this.normalizeMemberId(team.captain?.id);
+    if (capId) ids.add(capId);
+    if (Array.isArray(team.players)) {
+      for (const p of team.players) {
+        const pid = this.normalizeMemberId(p?.id);
+        if (pid) ids.add(pid);
+      }
+    }
+    return ids;
+  }
+
+  public isMemberInFlight(memberIds: Iterable<string>): string | null {
+    for (const rawId of memberIds) {
+      const id = this.normalizeMemberId(rawId);
+      if (id && this.inFlightPlayerIds.has(id)) {
+        return id;
+      }
+    }
+    return null;
+  }
+
+  public markMembersInFlight(memberIds: Iterable<string>, inFlight: boolean): void {
+    for (const rawId of memberIds) {
+      const id = this.normalizeMemberId(rawId);
+      if (!id) continue;
+      if (inFlight) {
+        this.inFlightPlayerIds.add(id);
+      } else {
+        this.inFlightPlayerIds.delete(id);
+      }
+    }
+  }
+
+  public async resolveSubmittedPlayer(
+    rawPlayer: any,
+    guild?: Guild | null,
+    existingTeams: any[] = []
+  ): Promise<{ id: string; username: string; displayName: string; avatar: string; isBot?: boolean } | null> {
+    if (!rawPlayer) return null;
+    const rawId = typeof rawPlayer === 'string' ? rawPlayer : (rawPlayer.id || '');
+    const rawUsername = typeof rawPlayer === 'string' ? rawPlayer : (rawPlayer.username || rawPlayer.displayName || rawId);
+    const rawDisplay = typeof rawPlayer === 'string' ? rawPlayer : (rawPlayer.displayName || rawPlayer.username || rawId);
+
+    const candidateId = this.normalizeMemberId(rawId);
+    const candidateName = String(rawUsername || '').replace(/^<@!?(\d+)>$/, '$1').replace(/^@/, '').trim();
+    const candidateNameLower = candidateName.toLowerCase();
+
+    if (/^\d{15,20}$/.test(candidateId)) {
+      const member =
+        guild?.members.cache.get(candidateId) ||
+        (guild ? await guild.members.fetch(candidateId).catch(() => null) : null);
+      const user =
+        member?.user ||
+        this.client?.users.cache.get(candidateId) ||
+        (await this.client?.users.fetch(candidateId).catch(() => null));
+      if (user) {
+        return {
+          id: user.id,
+          username: user.username,
+          displayName: member?.displayName || user.displayName || user.username,
+          avatar: user.displayAvatarURL() || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.id}`,
+          isBot: Boolean(user.bot)
+        };
+      }
+      return {
+        id: candidateId,
+        username: candidateName && !/^\d+$/.test(candidateName) ? candidateName : `user_${candidateId.slice(-4)}`,
+        displayName: rawDisplay && !/^\d+$/.test(String(rawDisplay)) ? String(rawDisplay).replace(/^@/, '') : `Player ${candidateId.slice(-4)}`,
+        avatar: rawPlayer?.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${candidateId}`,
+        isBot: false
+      };
+    }
+
+    if (/^\d{15,20}$/.test(candidateName)) {
+      return this.resolveSubmittedPlayer({ ...rawPlayer, id: candidateName }, guild, existingTeams);
+    }
+
+    if (candidateNameLower) {
+      for (const team of existingTeams) {
+        if (
+          team.captain &&
+          (String(team.captain.username || '').toLowerCase() === candidateNameLower ||
+            String(team.captain.displayName || '').toLowerCase() === candidateNameLower)
+        ) {
+          const cid = this.normalizeMemberId(team.captain.id);
+          if (cid) {
+            return {
+              id: cid,
+              username: team.captain.username || candidateName,
+              displayName: team.captain.displayName || team.captain.username || candidateName,
+              avatar: team.captain.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${cid}`,
+              isBot: false
+            };
+          }
+        }
+        for (const p of team.players || []) {
+          if (
+            String(p.username || '').toLowerCase() === candidateNameLower ||
+            String(p.displayName || '').toLowerCase() === candidateNameLower
+          ) {
+            const pid = this.normalizeMemberId(p.id);
+            if (pid) {
+              return {
+                id: pid,
+                username: p.username || candidateName,
+                displayName: p.displayName || p.username || candidateName,
+                avatar: p.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${pid}`,
+                isBot: false
+              };
+            }
+          }
+        }
+      }
+    }
+
+    if (guild && candidateNameLower) {
+      let foundMember = guild.members.cache.find(
+        m =>
+          m.user.username.toLowerCase() === candidateNameLower ||
+          m.displayName.toLowerCase() === candidateNameLower ||
+          m.user.globalName?.toLowerCase() === candidateNameLower
+      );
+      if (!foundMember) {
+        const searched = await guild.members.fetch({ query: candidateName, limit: 5 }).catch(() => null);
+        foundMember = searched?.find(
+          m =>
+            m.user.username.toLowerCase() === candidateNameLower ||
+            m.displayName.toLowerCase() === candidateNameLower ||
+            m.user.globalName?.toLowerCase() === candidateNameLower
+        );
+      }
+      if (foundMember) {
+        return {
+          id: foundMember.id,
+          username: foundMember.user.username,
+          displayName: foundMember.displayName || foundMember.user.displayName || foundMember.user.username,
+          avatar: foundMember.user.displayAvatarURL() || `https://api.dicebear.com/7.x/bottts/svg?seed=${foundMember.id}`,
+          isBot: Boolean(foundMember.user.bot)
+        };
+      }
+    }
+
+    const fallbackId = candidateId && !candidateId.startsWith('ply-') ? candidateId : candidateNameLower;
+    if (!fallbackId) return null;
+
+    return {
+      id: fallbackId,
+      username: candidateName || fallbackId,
+      displayName: String(rawDisplay || candidateName || fallbackId).replace(/^@/, ''),
+      avatar: rawPlayer?.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(fallbackId)}`,
+      isBot: false
+    };
+  }
+
+  public validateTeamRegistrationRoster(params: {
+    teamName: string;
+    captainId: string;
+    players: { id: string; username?: string; displayName?: string; isBot?: boolean }[];
+    config: any;
+    existingTeams: any[];
+  }): { valid: boolean; code?: string; error?: string } {
+    const { teamName, captainId, players, config, existingTeams } = params;
+    const cleanedName = (teamName || '').replace(/<@!?\d+>/g, '').replace(/^<\s*|\s*>$/g, '').trim();
+    const lowerName = cleanedName.toLowerCase();
+
+    const reservedNames = new Set([
+      'team name',
+      'your team',
+      'your team name',
+      '@everyone',
+      'everyone',
+      'here',
+      'ffa bot manager',
+      (config?.managerRoleName || 'FFA Bot Manager').trim().toLowerCase(),
+      (config?.verifiedRoleName || 'Verified Team').trim().toLowerCase(),
+      (config?.roleName || 'Confirmed Slot').trim().toLowerCase()
+    ]);
+
+    if (!cleanedName || cleanedName.length < 2 || reservedNames.has(lowerName)) {
+      return {
+        valid: false,
+        code: 'INVALID_TEAM_NAME',
+        error: 'Invalid Team Name: Please specify a valid, unique team name (at least 2 characters).'
+      };
+    }
+
+    const duplicateTeamByName = existingTeams.find(t => (t.teamName || '').trim().toLowerCase() === lowerName);
+    if (duplicateTeamByName) {
+      const slotDesc = duplicateTeamByName.isWaitlist
+        ? `Waitlist #${duplicateTeamByName.slotNumber}`
+        : `Slot #${duplicateTeamByName.slotNumber}`;
+      return {
+        valid: false,
+        code: 'DUPLICATE_TEAM_NAME',
+        error: `Team name **${duplicateTeamByName.teamName}** is already registered in ${slotDesc}.`
+      };
+    }
+
+    const reqTags = Math.max(1, config?.requiredTags || 4);
+    if (!Array.isArray(players) || players.length < reqTags) {
+      return {
+        valid: false,
+        code: 'INSUFFICIENT_TAGS',
+        error: `Tagcheck Notice: Exactly **${reqTags} players** are required for ${config?.format || 'this tournament'} (as configured during \`/setup\`). You provided **${players ? players.length : 0}**.`
+      };
+    }
+
+    if (players.length > reqTags) {
+      return {
+        valid: false,
+        code: 'EXCESSIVE_TAGS',
+        error: `Tagcheck Notice: Only **${reqTags} players** are allowed per team (as configured during \`/setup\` — no extra players or tags). You provided **${players.length}**.`
+      };
+    }
+
+    const seenInSubmittedPlayers = new Set<string>();
+    const normalizedPlayerIds: string[] = [];
+
+    for (const p of players) {
+      const pid = this.normalizeMemberId(p?.id);
+      if (!pid) {
+        return {
+          valid: false,
+          code: 'INVALID_PLAYER_ID',
+          error: 'EasyTag Notice: Every player in the roster must have a valid Discord user ID.'
+        };
+      }
+      if (config?.disallowBots && p?.isBot) {
+        return {
+          valid: false,
+          code: 'BOT_TAGGED',
+          error: `Tagcheck Notice: Bot <@${pid}> cannot be registered as a tournament player.`
+        };
+      }
+      if (seenInSubmittedPlayers.has(pid)) {
+        const label = /^\d{15,20}$/.test(pid) ? `<@${pid}>` : `@${p?.displayName || p?.username || pid}`;
+        return {
+          valid: false,
+          code: 'DUPLICATE_PLAYERS_IN_TEAM',
+          error: `Tagcheck Notice: Duplicate member ${label} detected within the same team roster. Every player in a team must be a unique Discord user!`
+        };
+      }
+      seenInSubmittedPlayers.add(pid);
+      normalizedPlayerIds.push(pid);
+    }
+
+    const normCaptainId = this.normalizeMemberId(captainId) || normalizedPlayerIds[0] || '';
+    const allSubmittedMemberIds = Array.from(new Set([normCaptainId, ...normalizedPlayerIds].filter(Boolean)));
+
+    for (const memberId of allSubmittedMemberIds) {
+      const banned = this.blacklist.find(b => this.normalizeMemberId(b.userId) === memberId);
+      if (banned) {
+        const label = /^\d{15,20}$/.test(memberId) ? `<@${memberId}>` : `@${banned.username || memberId}`;
+        return {
+          valid: false,
+          code: 'PLAYER_BLACKLISTED',
+          error: `Tagcheck Notice: Member ${label} is currently **BLACKLISTED** from this tournament (Reason: *${banned.reason}*).`
+        };
+      }
+    }
+
+    const inFlightId = this.isMemberInFlight(allSubmittedMemberIds);
+    if (inFlightId) {
+      const label = /^\d{15,20}$/.test(inFlightId) ? `<@${inFlightId}>` : `@${inFlightId}`;
+      return {
+        valid: false,
+        code: 'MEMBER_IN_FLIGHT',
+        error: `Tagcheck Notice: Member ${label} is currently being processed in another simultaneous registration request.`
+      };
+    }
+
+    for (const existingTeam of existingTeams) {
+      const existingMemberIds = this.getTeamMemberIds(existingTeam);
+      const slotLabel = existingTeam.isWaitlist
+        ? `Waitlist #${existingTeam.slotNumber}`
+        : `Slot #${existingTeam.slotNumber}${existingTeam.group ? ` (${existingTeam.group})` : ''}`;
+
+      if (normCaptainId && existingMemberIds.has(normCaptainId)) {
+        const isExistingCaptain = this.normalizeMemberId(existingTeam.captain?.id) === normCaptainId;
+        const roleLabel = isExistingCaptain ? 'the captain of' : 'a registered player in';
+        const mention = /^\d{15,20}$/.test(normCaptainId) ? `<@${normCaptainId}>` : `@${normCaptainId}`;
+        return {
+          valid: false,
+          code: 'MEMBER_ALREADY_IN_TEAM',
+          error: `Tagcheck Notice: ${mention} is already registered as ${roleLabel} **${existingTeam.teamName}** (${slotLabel}). A member can belong to only one team until their existing registration is deleted!`
+        };
+      }
+
+      for (const p of players) {
+        const pid = this.normalizeMemberId(p.id);
+        if (pid && existingMemberIds.has(pid)) {
+          const isExistingCaptain = this.normalizeMemberId(existingTeam.captain?.id) === pid;
+          const roleLabel = isExistingCaptain ? 'the captain of' : 'a registered player in';
+          const mention = /^\d{15,20}$/.test(pid) ? `<@${pid}>` : `@${p.displayName || p.username || pid}`;
+          return {
+            valid: false,
+            code: 'PLAYER_ALREADY_REGISTERED',
+            error: `Tagcheck Notice: Player ${mention} is already registered as ${roleLabel} **${existingTeam.teamName}** (${slotLabel}). One member can belong to only one team!`
+          };
+        }
+      }
+    }
+
+    return { valid: true };
+  }
+
+  public async syncTeamRolesForRegistration(guild: Guild, team: any, config: any): Promise<string[]> {
+    const warnings: string[] = [];
+    if (!guild || !team) return warnings;
+
+    const allMemberIds = Array.from(this.getTeamMemberIds(team));
+    if (!team.isWaitlist) {
+      const verifiedRoleName = config?.verifiedRoleName || 'Verified Team';
+      const slotRoleName = config?.roleName || 'Confirmed Slot';
+      const verifiedRole = guild.roles.cache.find(r => r.name.toLowerCase() === verifiedRoleName.toLowerCase());
+      const slotRole = guild.roles.cache.find(r => r.name.toLowerCase() === slotRoleName.toLowerCase());
+      const rolesToAdd = [verifiedRole, slotRole].filter(Boolean);
+
+      if (rolesToAdd.length > 0) {
+        for (const uid of allMemberIds) {
+          if (!/^\d{15,20}$/.test(uid)) continue;
+          try {
+            const member = guild.members.cache.get(uid) || (await guild.members.fetch(uid).catch(() => null));
+            if (member) {
+              await member.roles.add(rolesToAdd as any).catch((err: any) => {
+                warnings.push(`Could not assign tournament roles to <@${uid}>: ${err.message}`);
+              });
+            }
+          } catch {
+          }
+        }
+      }
+    }
+
+    if (config?.autoCreateTeamVoice !== false) {
+      const wsResult = await this.provisionTeamWorkspace(guild, team, allMemberIds);
+      if (wsResult.warnings.length > 0) {
+        warnings.push(...wsResult.warnings);
+      }
+      if (this.onConfigUpdated) {
+        this.onConfigUpdated();
+      }
+    }
+
+    return warnings;
+  }
+
+  public async syncGuildChannels(config: any, targetGuild?: Guild | null): Promise<void> {
+    if (!config) return;
+    const guilds = targetGuild
+      ? [targetGuild]
+      : this.client
+      ? Array.from(this.client.guilds.cache.values())
+      : [];
+
+    for (const g of guilds) {
+      await this.updateSlotListChannel(g, config).catch(() => {});
+    }
   }
 
   public getRegionCountryCode(region: 'India' | 'Bangladesh' | 'Pakistan'): string {
@@ -731,31 +1105,46 @@ class DiscordBotManager {
     const canManageRoles = isAdmin || (botMember?.permissions.has(PermissionsBitField.Flags.ManageRoles) ?? false);
     const canManageChannels = isAdmin || (botMember?.permissions.has(PermissionsBitField.Flags.ManageChannels) ?? false);
 
-    const uniquePlayerIds = Array.from(
-      new Set(
-        [
-          team.captain?.id,
-          ...playerIds,
-          ...(team.players || []).map((p: any) => p.id)
-        ].filter(Boolean)
-      )
-    );
+    const uniquePlayerIds = Array.from(this.getTeamMemberIds(team));
+    for (const rawPid of playerIds) {
+      const normPid = this.normalizeMemberId(rawPid);
+      if (normPid && !uniquePlayerIds.includes(normPid)) {
+        uniquePlayerIds.push(normPid);
+      }
+    }
 
-    let teamRole = guild.roles.cache.find(r => r.name.toLowerCase() === roleName.toLowerCase());
+    const configForRoles = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    const reservedRoleNames = new Set([
+      '@everyone',
+      'ffa bot manager',
+      (configForRoles?.managerRoleName || 'FFA Bot Manager').trim().toLowerCase(),
+      (configForRoles?.verifiedRoleName || 'Verified Team').trim().toLowerCase(),
+      (configForRoles?.roleName || 'Confirmed Slot').trim().toLowerCase()
+    ]);
+
+    const effectiveRoleName = reservedRoleNames.has(roleName.toLowerCase()) ? `Team ${roleName}` : roleName;
+    team.teamRoleName = effectiveRoleName;
+
+    let teamRole = guild.roles.cache.find(
+      r =>
+        !reservedRoleNames.has(r.name.toLowerCase()) &&
+        !r.managed &&
+        ((team.teamRoleId && r.id === team.teamRoleId) || r.name.toLowerCase() === effectiveRoleName.toLowerCase())
+    );
     if (!teamRole && canManageRoles) {
       try {
         teamRole = await guild.roles.create({
-          name: roleName,
+          name: effectiveRoleName,
           color: 0x5865F2,
           hoist: false,
           mentionable: true,
           reason: `FFA-Manager Team Role for ${cleanTeamName} (Slot #${team.slotNumber})`
         });
       } catch (err: any) {
-        warnings.push(`Could not create team role @${roleName}: ${err.message}`);
+        warnings.push(`Could not create team role @${effectiveRoleName}: ${err.message}`);
       }
     } else if (!teamRole && !canManageRoles) {
-      warnings.push(`Bot lacks "Manage Roles" permission to create team role @${roleName}.`);
+      warnings.push(`Bot lacks "Manage Roles" permission to create team role @${effectiveRoleName}.`);
     }
 
     if (teamRole) {
@@ -763,8 +1152,10 @@ class DiscordBotManager {
       team.teamRoleName = teamRole.name;
     }
 
+    const allowedSet = new Set(uniquePlayerIds);
     const resolvedMemberIds: string[] = [];
     for (const uid of uniquePlayerIds) {
+      if (!/^\d{15,20}$/.test(uid)) continue;
       try {
         const member = guild.members.cache.get(uid) || (await guild.members.fetch(uid).catch(() => null));
         if (member) {
@@ -777,6 +1168,14 @@ class DiscordBotManager {
         }
       } catch (err: any) {
         warnings.push(`Could not resolve member <@${uid}> for role assignment: ${err.message}`);
+      }
+    }
+
+    if (teamRole && canManageRoles) {
+      for (const [, member] of guild.members.cache) {
+        if (member.roles.cache.has(teamRole.id) && !allowedSet.has(member.id)) {
+          await member.roles.remove(teamRole).catch(() => {});
+        }
       }
     }
 
@@ -1393,9 +1792,12 @@ class DiscordBotManager {
       }
 
       teams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
+      if (this.onConfigUpdated) {
+        this.onConfigUpdated();
+      }
 
-      if (guild && config) {
-        await this.updateSlotListChannel(guild, config).catch(() => {});
+      if (config) {
+        await this.syncGuildChannels(config, guild);
       }
 
       this.logEvent(
@@ -2336,11 +2738,19 @@ class DiscordBotManager {
         this.logEvent('info', `Admin @${message.author.username} closed registrations via Discord command.`, message.guild?.name);
         return message.reply('🔴 **Tournament registrations are now CLOSED!**');
       } else if (sub === 'reset') {
+        const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+        if (message.guild) {
+          for (const t of teams) {
+            await this.cleanupTeamWorkspace(message.guild, t).catch(() => {});
+          }
+        }
+        teams.length = 0;
         config.status = 'open';
         config.explicitlyStoppedOrPaused = false;
         if (this.onConfigUpdated) this.onConfigUpdated();
+        await this.syncGuildChannels(config, message.guild);
         this.logEvent('warn', `Admin @${message.author.username} reset registrations via Discord command.`, message.guild?.name);
-        return message.reply('🔄 **Tournament slots have been reset.**');
+        return message.reply('🔄 **Tournament slots have been reset and registration channels updated.**');
       }
     }
 
@@ -2350,12 +2760,22 @@ class DiscordBotManager {
       const idMatch = rawArg.match(/^<@!?(\d+)>$/) || rawArg.match(/^(\d{15,20})$/);
 
       if (mentionedUser || idMatch || (rawArg && isNaN(parseInt(rawArg, 10)))) {
-        const targetId = mentionedUser?.id || (idMatch ? idMatch[1] : rawArg.replace(/^@/, ''));
+        const targetId = this.normalizeMemberId(mentionedUser?.id || (idMatch ? idMatch[1] : rawArg));
         const targetName = mentionedUser?.username || targetId;
         const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
-        const banned = this.blacklist.find(b => b.userId === targetId || b.username.toLowerCase() === targetName.toLowerCase());
-        const foundTeam = teams.find(t =>
-          t.players.some((p: any) => p.id === targetId || p.username?.toLowerCase() === targetName.toLowerCase() || p.displayName?.toLowerCase() === targetName.toLowerCase())
+        const banned = this.blacklist.find(
+          b => this.normalizeMemberId(b.userId) === targetId || b.username.toLowerCase() === targetName.toLowerCase()
+        );
+        const foundTeam = teams.find(
+          t =>
+            this.getTeamMemberIds(t).has(targetId) ||
+            t.captain?.username?.toLowerCase() === targetName.toLowerCase() ||
+            t.captain?.displayName?.toLowerCase() === targetName.toLowerCase() ||
+            t.players.some(
+              (p: any) =>
+                p.username?.toLowerCase() === targetName.toLowerCase() ||
+                p.displayName?.toLowerCase() === targetName.toLowerCase()
+            )
         );
 
         const embed = new EmbedBuilder()
@@ -3016,13 +3436,12 @@ class DiscordBotManager {
         );
         if (!found && message.guild) {
           const searched = await message.guild.members.fetch({ query: token, limit: 5 }).catch(() => null);
-          found =
-            searched?.find(
-              m =>
-                m.user.username.toLowerCase() === name ||
-                m.displayName.toLowerCase() === name ||
-                m.user.globalName?.toLowerCase() === name
-            ) || searched?.first();
+          found = searched?.find(
+            m =>
+              m.user.username.toLowerCase() === name ||
+              m.displayName.toLowerCase() === name ||
+              m.user.globalName?.toLowerCase() === name
+          );
         }
       }
 
@@ -3042,7 +3461,7 @@ class DiscordBotManager {
       }
     }
 
-    if (config.prohibitSelfDuplication && allOrderedTagIds.length !== new Set(allOrderedTagIds).size) {
+    if (allOrderedTagIds.length !== new Set(allOrderedTagIds).size) {
       const errMsg = 'Tagcheck Notice: Duplicate player tags detected within the same team submission. Every player tag in your roster must be unique!';
       await this.sendErrorAndAutoDelete(message, errMsg);
       this.logEvent('warn', `Self-duplication rejected for @${message.author.username}`, message.guild?.name);
@@ -3070,7 +3489,8 @@ class DiscordBotManager {
               id: uid,
               username: `user_${uid.slice(-4)}`,
               displayName: `Player ${uid.slice(-4)}`,
-              avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`
+              avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`,
+              isBot: false
             });
             continue;
           }
@@ -3085,7 +3505,8 @@ class DiscordBotManager {
           id: uid,
           username: u.username,
           displayName: fetchedMember?.displayName || u.displayName || u.username,
-          avatar: u.displayAvatarURL() || `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`
+          avatar: u.displayAvatarURL() || `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`,
+          isBot: Boolean(u.bot)
         });
       } catch {
         if (isValidDiscordSnowflake(uid)) {
@@ -3093,7 +3514,8 @@ class DiscordBotManager {
             id: uid,
             username: `user_${uid.slice(-4)}`,
             displayName: `Player ${uid.slice(-4)}`,
-            avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`
+            avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`,
+            isBot: false
           });
         } else {
           unresolvedIdentifiers.push(`ID:${uid}`);
@@ -3108,218 +3530,166 @@ class DiscordBotManager {
       return;
     }
 
-    if (taggedUserIds.length < config.requiredTags) {
-      const errMsg = `Tagcheck Notice: Exactly **${config.requiredTags} players** are required for ${config.format} (as configured during \`/setup\`). You provided **${taggedUserIds.length}**.`;
-      await this.sendErrorAndAutoDelete(message, errMsg);
-      this.logEvent('info', `Registration check for @${message.author.username}: Provided ${taggedUserIds.length}/${config.requiredTags} tags`, message.guild?.name);
+    const rosterValidation = this.validateTeamRegistrationRoster({
+      teamName,
+      captainId: message.author.id,
+      players: playersList,
+      config,
+      existingTeams
+    });
+
+    if (!rosterValidation.valid) {
+      await this.sendErrorAndAutoDelete(message, rosterValidation.error || 'Registration validation failed.');
+      this.logEvent(
+        'info',
+        `Registration rejected for @${message.author.username} (${rosterValidation.code}): ${rosterValidation.error}`,
+        message.guild?.name
+      );
       return;
     }
 
-    if (taggedUserIds.length > config.requiredTags) {
-      const errMsg = `Tagcheck Notice: Only **${config.requiredTags} players** are allowed per team (as configured during \`/setup\` — no extra players or tags). You provided **${taggedUserIds.length}**.`;
-      await this.sendErrorAndAutoDelete(message, errMsg);
-      return;
-    }
-
-    for (const taggedId of [message.author.id, ...taggedUserIds]) {
-      const banned = this.blacklist.find(b => b.userId === taggedId);
-      if (banned) {
-        const errMsg = `Tagcheck Notice: Player <@${taggedId}> is currently **BLACKLISTED** from this tournament (Reason: *${banned.reason}*).`;
-        await this.sendErrorAndAutoDelete(message, errMsg);
-        this.logEvent('info', `Registration notice for @${message.author.username}: Blacklisted player <@${taggedId}>`, message.guild?.name);
-        return;
-      }
-    }
-
-    const captainExistingTeam = existingTeams.find(t => t.captain?.id === message.author.id);
-
-    const duplicateTeamByName = existingTeams.find(
-      t => (!captainExistingTeam || t.id !== captainExistingTeam.id) && t.teamName.trim().toLowerCase() === lowerTeamName
-    );
-    if (duplicateTeamByName) {
-      const errMsg = `Tagcheck Notice: Team name **${duplicateTeamByName.teamName}** is already registered in Slot #${duplicateTeamByName.slotNumber}.`;
-      await this.sendErrorAndAutoDelete(message, errMsg);
-      return;
-    }
-
-    if (config.prohibitDuplicateTags) {
-      for (const taggedId of taggedUserIds) {
-        if (this.inFlightPlayerIds.has(taggedId)) {
-          const errMsg = `Tagcheck Notice: Player <@${taggedId}> is currently being processed in another simultaneous registration.`;
-          await this.sendErrorAndAutoDelete(message, errMsg);
-          return;
-        }
-        for (const team of existingTeams) {
-          if (captainExistingTeam && team.id === captainExistingTeam.id) continue;
-          if (team.players.some((p: any) => p.id === taggedId)) {
-            const errMsg = `Tagcheck Notice: Player <@${taggedId}> is already registered in **${team.teamName}** (Slot #${team.slotNumber}). Multi-team registration is prohibited!`;
-            await this.sendErrorAndAutoDelete(message, errMsg);
-            this.logEvent('info', `Tagcheck notice for @${message.author.username}: Player <@${taggedId}> already registered in "${team.teamName}"`, message.guild?.name);
-            return;
-          }
-        }
-      }
-    }
-
-    taggedUserIds.forEach(id => this.inFlightPlayerIds.add(id));
+    const allMemberIds = Array.from(new Set([message.author.id, ...taggedUserIds]));
+    this.markMembersInFlight(allMemberIds, true);
 
     try {
-      if (captainExistingTeam) {
-        if (message.guild) {
-          await this.cleanupTeamWorkspace(message.guild, captainExistingTeam).catch(() => {});
-        }
-        const idx = existingTeams.findIndex(t => t.id === captainExistingTeam.id);
-        if (idx !== -1) {
-          existingTeams.splice(idx, 1);
-        }
-      }
-
-      const currentConfirmed = existingTeams.filter(t => !t.isWaitlist);
-      const currentWaitlist = existingTeams.filter(t => t.isWaitlist);
-      const isWaitlist = captainExistingTeam ? captainExistingTeam.isWaitlist : (currentConfirmed.length >= config.totalSlots);
-
-      let slotNumber = 1;
-      if (captainExistingTeam) {
-        slotNumber = captainExistingTeam.slotNumber;
-      } else if (isWaitlist) {
-        slotNumber = currentWaitlist.length + 1;
-      } else {
-        const usedSlots = new Set(currentConfirmed.map(t => t.slotNumber));
-        while (usedSlots.has(slotNumber) && slotNumber <= config.totalSlots) {
-          slotNumber++;
-        }
-      }
-
-      const assignedGroup = this.calculateGroupForSlot(slotNumber, config);
-
-      let parsedWhatsapp1: string | undefined = undefined;
-      let parsedRegion: 'India' | 'Pakistan' | 'Bangladesh' = 'India';
-
-      const regMatch = processedText.match(/region\s*[:=-]\s*(india|pakistan|bangladesh)/i);
-      if (regMatch && regMatch[1]) {
-        const lower = regMatch[1].toLowerCase();
-        if (lower === 'india') parsedRegion = 'India';
-        else if (lower === 'pakistan') parsedRegion = 'Pakistan';
-        else if (lower === 'bangladesh') parsedRegion = 'Bangladesh';
-      }
-
-      const wa1Match = processedText.match(/(?:primary\s*whatsapp|whatsapp\s*number\s*1|whatsapp\s*1|whatsapp\s*number|whatsapp\s*no|whatsapp|wa|phone|contact)\s*[:=-]\s*([+\d\s\-()]{7,25})/i);
-      if (wa1Match && wa1Match[1]) {
-        const norm = this.normalizeWhatsAppWithRegion(wa1Match[1], parsedRegion);
-        if (norm.valid) {
-          parsedWhatsapp1 = norm.formatted;
-        }
-      }
-
-      const newTeam: any = {
-        id: `team-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        slotNumber,
-        teamName,
-        captain: {
-          id: message.author.id,
-          username: message.author.username,
-          displayName: message.author.displayName || message.author.username,
-          avatar: message.author.displayAvatarURL() || `https://api.dicebear.com/7.x/bottts/svg?seed=${message.author.id}`
-        },
-        players: playersList,
-        registeredAt: new Date().toISOString(),
-        messageId: message.id,
-        channelId: message.channel.id,
-        isWaitlist,
-        group: assignedGroup,
-        teamRoleName: teamName,
-        teamCategoryName: teamName,
-        teamVoiceChannelName: teamName,
-        whatsappNumber1: parsedWhatsapp1,
-        region: parsedRegion
-      };
-
-      if (this.onTeamRegistered) {
-        this.onTeamRegistered(newTeam);
-      }
-      existingTeams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
-
-      this.logEvent('success', `✅ Slot ${isWaitlist ? `WL #${slotNumber}` : `#${slotNumber} (${assignedGroup})`} confirmed for Team "${teamName}" (Captain: @${newTeam.captain.displayName}, ${playersList.length} tags verified)`, message.guild?.name);
-
-      await message.react('✅').catch(() => {});
-
-      if (message.guild) {
-        const verifiedRoleName = config.verifiedRoleName || 'Verified Team';
-        const slotRoleName = config.roleName || 'Confirmed Slot';
-        const verifiedRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === verifiedRoleName.toLowerCase());
-        const slotRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === slotRoleName.toLowerCase());
-
-        const rolesToAdd = [verifiedRole, slotRole].filter(Boolean);
-
-        if (rolesToAdd.length > 0 && message.member) {
-          await message.member.roles.add(rolesToAdd as any).catch(() => {});
+      await this.withOperationLock(async () => {
+        const latestTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : existingTeams;
+        const lockValidation = this.validateTeamRegistrationRoster({
+          teamName,
+          captainId: message.author.id,
+          players: playersList,
+          config: { ...config },
+          existingTeams: latestTeams
+        });
+        if (!lockValidation.valid && lockValidation.code !== 'MEMBER_IN_FLIGHT') {
+          await this.sendErrorAndAutoDelete(message, lockValidation.error || 'Registration validation failed.');
+          return;
         }
 
-        for (const uid of taggedUserIds) {
-          if (uid !== message.author.id && rolesToAdd.length > 0) {
-            try {
-              const member = message.guild.members.cache.get(uid) || (await message.guild.members.fetch(uid).catch(() => null));
-              if (member) {
-                await member.roles.add(rolesToAdd as any).catch(() => {});
-              }
-            } catch {
-            }
+        const currentConfirmed = latestTeams.filter(t => !t.isWaitlist);
+        const currentWaitlist = latestTeams.filter(t => t.isWaitlist);
+        const isWaitlist = currentConfirmed.length >= config.totalSlots;
+
+        let slotNumber = 1;
+        if (isWaitlist) {
+          slotNumber = currentWaitlist.length + 1;
+        } else {
+          const usedSlots = new Set(currentConfirmed.map(t => t.slotNumber));
+          while (usedSlots.has(slotNumber) && slotNumber <= config.totalSlots) {
+            slotNumber++;
           }
         }
 
-        if (config.autoCreateTeamVoice !== false) {
-          await this.provisionTeamWorkspace(message.guild, newTeam, taggedUserIds);
-          if (this.onConfigUpdated) this.onConfigUpdated();
+        const assignedGroup = isWaitlist ? undefined : this.calculateGroupForSlot(slotNumber, config);
+
+        let parsedWhatsapp1: string | undefined = undefined;
+        let parsedRegion: 'India' | 'Pakistan' | 'Bangladesh' = 'India';
+
+        const regMatch = processedText.match(/region\s*[:=-]\s*(india|pakistan|bangladesh)/i);
+        if (regMatch && regMatch[1]) {
+          const lower = regMatch[1].toLowerCase();
+          if (lower === 'india') parsedRegion = 'India';
+          else if (lower === 'pakistan') parsedRegion = 'Pakistan';
+          else if (lower === 'bangladesh') parsedRegion = 'Bangladesh';
         }
-      }
 
-      const idpChannel = message.guild?.channels.cache.find(
-        c => c.name === config.idpChannel || c.name === '🔑┃id-pass' || c.name === 'id-pass'
-      );
+        const wa1Match = processedText.match(/(?:primary\s*whatsapp|whatsapp\s*number\s*1|whatsapp\s*1|whatsapp\s*number|whatsapp\s*no|whatsapp|wa|phone|contact)\s*[:=-]\s*([+\d\s\-()]{7,25})/i);
+        if (wa1Match && wa1Match[1]) {
+          const norm = this.normalizeWhatsAppWithRegion(wa1Match[1], parsedRegion);
+          if (norm.valid) {
+            parsedWhatsapp1 = norm.formatted;
+          }
+        }
 
-      const updatedConfirmedCount = existingTeams.filter(t => !t.isWaitlist).length;
-      const embed = new EmbedBuilder()
-        .setTitle(isWaitlist ? '⏳ Added to Waiting List' : '✅ Tournament Registration Confirmed!')
-        .setColor(isWaitlist ? 0xFEE75C : 0x57F287)
-        .setDescription(
-          isWaitlist
-            ? `Team **${teamName}** secured **Waitlist #${slotNumber}**.`
-            : `Congratulations! **${teamName}** has secured **Slot #${slotNumber}** for **${config.title}**!`
-        )
-        .addFields(
-          { name: 'Team Name', value: `\`${teamName}\``, inline: true },
-          { name: isWaitlist ? 'Waitlist Position' : 'Allocated Slot', value: isWaitlist ? `\`#WL-${slotNumber}\`` : `\`Slot #${slotNumber}\` (${assignedGroup})`, inline: true },
-          { name: 'Remaining Slots', value: `\`${Math.max(0, config.totalSlots - updatedConfirmedCount)}\``, inline: true },
-          { name: 'Region', value: `\`${newTeam.region || 'India'}\``, inline: true },
-          { name: 'WhatsApp No', value: newTeam.whatsappNumber1 ? `\`${newTeam.whatsappNumber1}\`` : '`Not provided`', inline: true },
-          { name: 'Roster Tags (Voice Role Granted)', value: taggedUserIds.map((id, i) => `${i + 1}. <@${id}>`).join('\n') },
-          {
-            name: 'Voice Channel Role & Tourney Role',
-            value: `${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${teamName}\``} • \`@${config.verifiedRoleName || 'Verified Team'}\``,
-            inline: true
+        const newTeam: any = {
+          id: `team-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          slotNumber,
+          teamName,
+          captain: {
+            id: message.author.id,
+            username: message.author.username,
+            displayName: message.author.displayName || message.author.username,
+            avatar: message.author.displayAvatarURL() || `https://api.dicebear.com/7.x/bottts/svg?seed=${message.author.id}`
           },
-          {
-            name: 'Team Category & Private VC',
-            value: newTeam.teamVoiceChannelId
-              ? `📁 **${newTeam.teamCategoryName || teamName}**\n🔊 <#${newTeam.teamVoiceChannelId}> *(All tagged players granted ${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${teamName}\``} to join)*`
-              : `📁 **${teamName}**\n🔊 \`${teamName}\` *(Private Team VC)*`,
-            inline: true
-          },
-          { name: 'Private Room', value: idpChannel ? `<#${idpChannel.id}> *(Credentials before match)*` : 'Unlocked `#id-pass`', inline: false }
-        )
-        .setFooter({ text: 'FFA | Glacier Cup Manager™ • Voice Channel Role granted to all tagged players' })
-        .setTimestamp();
+          players: playersList.map(({ isBot, ...rest }) => rest),
+          registeredAt: new Date().toISOString(),
+          messageId: message.id,
+          channelId: message.channel.id,
+          isWaitlist,
+          group: assignedGroup,
+          teamRoleName: teamName,
+          teamCategoryName: teamName,
+          teamVoiceChannelName: teamName,
+          whatsappNumber1: parsedWhatsapp1,
+          region: parsedRegion
+        };
 
-      const components =
-        message.guild && newTeam.teamVoiceChannelId
-          ? [this.createVoiceConnectButtonRow(message.guild.id, newTeam.teamVoiceChannelId, newTeam.teamVoiceChannelName || teamName)]
-          : [];
+        if (this.onTeamRegistered) {
+          this.onTeamRegistered(newTeam);
+        }
+        latestTeams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
 
-      await message.reply({ embeds: [embed], components }).catch(() => {});
+        this.logEvent(
+          'success',
+          `✅ Slot ${isWaitlist ? `WL #${slotNumber}` : `#${slotNumber} (${assignedGroup})`} confirmed for Team "${teamName}" (Captain: @${newTeam.captain.displayName}, ${playersList.length} tags verified)`,
+          message.guild?.name
+        );
 
-      this.scheduleSlotListUpdate(message.guild, config);
+        await message.react('✅').catch(() => {});
+
+        if (message.guild) {
+          await this.syncTeamRolesForRegistration(message.guild, newTeam, config);
+        }
+
+        const idpChannel = message.guild?.channels.cache.find(
+          c => c.name === config.idpChannel || c.name === '🔑┃id-pass' || c.name === 'id-pass'
+        );
+
+        const updatedConfirmedCount = latestTeams.filter(t => !t.isWaitlist).length;
+        const embed = new EmbedBuilder()
+          .setTitle(isWaitlist ? '⏳ Added to Waiting List' : '✅ Tournament Registration Confirmed!')
+          .setColor(isWaitlist ? 0xFEE75C : 0x57F287)
+          .setDescription(
+            isWaitlist
+              ? `Team **${teamName}** secured **Waitlist #${slotNumber}**.`
+              : `Congratulations! **${teamName}** has secured **Slot #${slotNumber}** for **${config.title}**!`
+          )
+          .addFields(
+            { name: 'Team Name', value: `\`${teamName}\``, inline: true },
+            { name: isWaitlist ? 'Waitlist Position' : 'Allocated Slot', value: isWaitlist ? `\`#WL-${slotNumber}\`` : `\`Slot #${slotNumber}\` (${assignedGroup})`, inline: true },
+            { name: 'Remaining Slots', value: `\`${Math.max(0, config.totalSlots - updatedConfirmedCount)}\``, inline: true },
+            { name: 'Region', value: `\`${newTeam.region || 'India'}\``, inline: true },
+            { name: 'WhatsApp No', value: newTeam.whatsappNumber1 ? `\`${newTeam.whatsappNumber1}\`` : '`Not provided`', inline: true },
+            { name: 'Captain', value: `<@${newTeam.captain.id}>`, inline: true },
+            { name: 'Roster Tags (Voice Role Granted)', value: taggedUserIds.map((id, i) => `${i + 1}. <@${id}>`).join('\n') },
+            {
+              name: 'Voice Channel Role & Tourney Role',
+              value: `${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``}${isWaitlist ? ' *(Waitlist)*' : ` • \`@${config.verifiedRoleName || 'Verified Team'}\``}`,
+              inline: true
+            },
+            {
+              name: 'Team Category & Private VC',
+              value: newTeam.teamVoiceChannelId
+                ? `📁 **${newTeam.teamCategoryName || teamName}**\n🔊 <#${newTeam.teamVoiceChannelId}> *(All team members granted ${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``} to join)*`
+                : `📁 **${teamName}**\n🔊 \`${teamName}\` *(Private Team VC)*`,
+              inline: true
+            },
+            { name: 'Private Room', value: idpChannel ? `<#${idpChannel.id}> *(Credentials before match)*` : 'Unlocked `#id-pass`', inline: false }
+          )
+          .setFooter({ text: 'FFA | Glacier Cup Manager™ • Voice Channel Role granted to all team members' })
+          .setTimestamp();
+
+        const components =
+          message.guild && newTeam.teamVoiceChannelId
+            ? [this.createVoiceConnectButtonRow(message.guild.id, newTeam.teamVoiceChannelId, newTeam.teamVoiceChannelName || teamName)]
+            : [];
+
+        await message.reply({ embeds: [embed], components }).catch(() => {});
+
+        await this.syncGuildChannels(config, message.guild);
+      });
     } finally {
-      taggedUserIds.forEach(id => this.inFlightPlayerIds.delete(id));
+      this.markMembersInFlight(allMemberIds, false);
     }
   }
 
@@ -3465,7 +3835,7 @@ class DiscordBotManager {
       return;
     }
 
-    if (config.prohibitSelfDuplication && allOrderedTagIds.length !== new Set(allOrderedTagIds).size) {
+    if (allOrderedTagIds.length !== new Set(allOrderedTagIds).size) {
       await interaction.editReply(
         '❌ **Tagcheck Notice:** Duplicate player tags detected within the same team submission. Every player tag in your roster must be unique!'
       );
@@ -3497,7 +3867,8 @@ class DiscordBotManager {
               id: uid,
               username: `user_${uid.slice(-4)}`,
               displayName: `Player ${uid.slice(-4)}`,
-              avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`
+              avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`,
+              isBot: false
             });
             continue;
           }
@@ -3514,7 +3885,8 @@ class DiscordBotManager {
           id: uid,
           username: u.username,
           displayName: fetchedMember?.displayName || fetchedMember?.nick || u.displayName || u.username,
-          avatar: (typeof u.displayAvatarURL === 'function' ? u.displayAvatarURL() : null) || `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`
+          avatar: (typeof u.displayAvatarURL === 'function' ? u.displayAvatarURL() : null) || `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`,
+          isBot: Boolean(u.bot)
         });
       } catch {
         if (isValidDiscordSnowflake(uid)) {
@@ -3522,249 +3894,188 @@ class DiscordBotManager {
             id: uid,
             username: `user_${uid.slice(-4)}`,
             displayName: `Player ${uid.slice(-4)}`,
-            avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`
+            avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`,
+            isBot: false
           });
         }
       }
     }
 
-    const reqTags = Math.max(1, config.requiredTags || 4);
+    const rosterValidation = this.validateTeamRegistrationRoster({
+      teamName,
+      captainId: interaction.user.id,
+      players: playersList,
+      config,
+      existingTeams
+    });
 
-    if (taggedUserIds.length < reqTags) {
-      await interaction.editReply(
-        `❌ **Tagcheck Notice:** Exactly **${reqTags} player${reqTags > 1 ? 's' : ''}** ${reqTags > 1 ? 'are' : 'is'} required for ${config.format || 'this tournament'} (set during \`/setup\`). You selected **${taggedUserIds.length}**.`
-      );
+    if (!rosterValidation.valid) {
+      await interaction.editReply(`❌ **${rosterValidation.error || 'Registration validation failed.'}**`);
       return;
     }
 
-    if (taggedUserIds.length > reqTags) {
-      await interaction.editReply(
-        `❌ **Tagcheck Notice:** Only **${reqTags} player${reqTags > 1 ? 's' : ''}** ${reqTags > 1 ? 'are' : 'is'} allowed per team (as set during \`/setup\` — no extra players or tags allowed). You selected **${taggedUserIds.length}**.`
-      );
-      return;
-    }
-
-    for (const taggedId of [interaction.user.id, ...taggedUserIds]) {
-      const banned = this.blacklist.find(b => b.userId === taggedId);
-      if (banned) {
-        await interaction.editReply(
-          `❌ **Tagcheck Notice:** Player <@${taggedId}> is currently **BLACKLISTED** from this tournament (Reason: *${banned.reason}*).`
-        );
-        return;
-      }
-    }
-
-    const captainExistingTeam = existingTeams.find(t => t.captain?.id === interaction.user.id);
-    const duplicateTeamByName = existingTeams.find(
-      t => (!captainExistingTeam || t.id !== captainExistingTeam.id) && t.teamName.trim().toLowerCase() === lowerTeamName
-    );
-    if (duplicateTeamByName) {
-      await interaction.editReply(
-        `❌ **Duplicate Team Name:** Team **${duplicateTeamByName.teamName}** is already registered in Slot #${duplicateTeamByName.slotNumber}.`
-      );
-      return;
-    }
-
-    if (config.prohibitDuplicateTags) {
-      for (const taggedId of taggedUserIds) {
-        if (this.inFlightPlayerIds.has(taggedId)) {
-          await interaction.editReply(
-            `❌ **Tagcheck Notice:** Player <@${taggedId}> is currently being processed in another simultaneous registration.`
-          );
-          return;
-        }
-        for (const team of existingTeams) {
-          if (captainExistingTeam && team.id === captainExistingTeam.id) continue;
-          if (team.players.some((p: any) => p.id === taggedId)) {
-            await interaction.editReply(
-              `❌ **Tagcheck Notice:** Player <@${taggedId}> is already registered in **${team.teamName}** (Slot #${team.slotNumber}). Multi-team registration is prohibited!`
-            );
-            return;
-          }
-        }
-      }
-    }
-
-    taggedUserIds.forEach(id => this.inFlightPlayerIds.add(id));
+    const allMemberIds = Array.from(new Set([interaction.user.id, ...taggedUserIds]));
+    this.markMembersInFlight(allMemberIds, true);
 
     try {
-      if (captainExistingTeam) {
-        if (interaction.guild) {
-          await this.cleanupTeamWorkspace(interaction.guild, captainExistingTeam).catch(() => {});
+      await this.withOperationLock(async () => {
+        const latestTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : existingTeams;
+        const lockValidation = this.validateTeamRegistrationRoster({
+          teamName,
+          captainId: interaction.user.id,
+          players: playersList,
+          config: { ...config },
+          existingTeams: latestTeams
+        });
+        if (!lockValidation.valid && lockValidation.code !== 'MEMBER_IN_FLIGHT') {
+          await interaction.editReply(`❌ **${lockValidation.error || 'Registration validation failed.'}**`);
+          return;
         }
-        const idx = existingTeams.findIndex(t => t.id === captainExistingTeam.id);
-        if (idx !== -1) {
-          existingTeams.splice(idx, 1);
-        }
-      }
 
-      const currentConfirmed = existingTeams.filter(t => !t.isWaitlist);
-      const currentWaitlist = existingTeams.filter(t => t.isWaitlist);
-      const isWaitlist = captainExistingTeam ? captainExistingTeam.isWaitlist : currentConfirmed.length >= config.totalSlots;
+        const currentConfirmed = latestTeams.filter(t => !t.isWaitlist);
+        const currentWaitlist = latestTeams.filter(t => t.isWaitlist);
+        const isWaitlist = currentConfirmed.length >= config.totalSlots;
 
-      let slotNumber = 1;
-      if (captainExistingTeam) {
-        slotNumber = captainExistingTeam.slotNumber;
-      } else if (isWaitlist) {
-        slotNumber = currentWaitlist.length + 1;
-      } else {
-        const usedSlots = new Set(currentConfirmed.map(t => t.slotNumber));
-        while (usedSlots.has(slotNumber) && slotNumber <= config.totalSlots) {
-          slotNumber++;
-        }
-      }
-
-      const assignedGroup = this.calculateGroupForSlot(slotNumber, config);
-
-      const newTeam: any = {
-        id: `team-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        slotNumber,
-        teamName,
-        captain: {
-          id: interaction.user.id,
-          username: interaction.user.username,
-          displayName: interaction.user.displayName || interaction.user.username,
-          avatar: interaction.user.displayAvatarURL() || `https://api.dicebear.com/7.x/bottts/svg?seed=${interaction.user.id}`
-        },
-        players: playersList,
-        registeredAt: new Date().toISOString(),
-        messageId: `modal-${interaction.id}`,
-        channelId: interaction.channelId || config.regChannel || 'registration',
-        isWaitlist,
-        group: assignedGroup,
-        teamRoleName: teamName,
-        teamCategoryName: teamName,
-        teamVoiceChannelName: teamName,
-        whatsappNumber1: cleanWa1,
-        region: parsedRegion
-      };
-
-      if (this.onTeamRegistered) {
-        this.onTeamRegistered(newTeam);
-      }
-      existingTeams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
-      this.pendingRegistrationDrafts.delete(interaction.user.id);
-
-      this.logEvent(
-        'success',
-        `✅ Slot ${isWaitlist ? `WL #${slotNumber}` : `#${slotNumber} (${assignedGroup})`} confirmed via Registration Panel for Team "${teamName}" (${parsedRegion}, Captain: @${newTeam.captain.displayName}, ${playersList.length} tags verified)`,
-        interaction.guild?.name
-      );
-
-      if (interaction.guild) {
-        const verifiedRoleName = config.verifiedRoleName || 'Verified Team';
-        const slotRoleName = config.roleName || 'Confirmed Slot';
-        const verifiedRole = interaction.guild.roles.cache.find(r => r.name.toLowerCase() === verifiedRoleName.toLowerCase());
-        const slotRole = interaction.guild.roles.cache.find(r => r.name.toLowerCase() === slotRoleName.toLowerCase());
-        const rolesToAdd = [verifiedRole, slotRole].filter(Boolean);
-
-        for (const uid of Array.from(new Set([interaction.user.id, ...taggedUserIds]))) {
-          if (rolesToAdd.length > 0) {
-            try {
-              const member =
-                interaction.guild.members.cache.get(uid) ||
-                (await interaction.guild.members.fetch(uid).catch(() => null));
-              if (member) {
-                await member.roles.add(rolesToAdd as any).catch(() => {});
-              }
-            } catch {
-            }
+        let slotNumber = 1;
+        if (isWaitlist) {
+          slotNumber = currentWaitlist.length + 1;
+        } else {
+          const usedSlots = new Set(currentConfirmed.map(t => t.slotNumber));
+          while (usedSlots.has(slotNumber) && slotNumber <= config.totalSlots) {
+            slotNumber++;
           }
         }
 
-        if (config.autoCreateTeamVoice !== false) {
-          await this.provisionTeamWorkspace(interaction.guild, newTeam, taggedUserIds);
-          if (this.onConfigUpdated) this.onConfigUpdated();
-        }
-      }
+        const assignedGroup = isWaitlist ? undefined : this.calculateGroupForSlot(slotNumber, config);
 
-      const idpChannel = interaction.guild?.channels.cache.find(
-        c => c.name === config.idpChannel || c.name === '🔑┃id-pass' || c.name === 'id-pass'
-      );
-
-      const updatedConfirmedCount = existingTeams.filter(t => !t.isWaitlist).length;
-      const privateConfirmEmbed = new EmbedBuilder()
-        .setTitle(isWaitlist ? '⏳ Added to Waiting List' : '✅ Tournament Registration Confirmed!')
-        .setColor(isWaitlist ? 0xFEE75C : 0x57F287)
-        .setDescription(
-          isWaitlist
-            ? `Team **${teamName}** secured **Waitlist #${slotNumber}**.`
-            : `Congratulations! **${teamName}** has secured **Slot #${slotNumber}** for **${config.title}**!`
-        )
-        .addFields(
-          { name: 'Team Name', value: `\`${teamName}\``, inline: true },
-          { name: isWaitlist ? 'Waitlist Position' : 'Allocated Slot', value: isWaitlist ? `\`#WL-${slotNumber}\`` : `\`Slot #${slotNumber}\` (${assignedGroup})`, inline: true },
-          { name: 'Remaining Slots', value: `\`${Math.max(0, config.totalSlots - updatedConfirmedCount)}\``, inline: true },
-          { name: 'Region', value: `\`${newTeam.region || 'India'}\``, inline: true },
-          { name: 'WhatsApp No', value: newTeam.whatsappNumber1 ? `\`${newTeam.whatsappNumber1}\`` : '`Not provided`', inline: true },
-          { name: 'Roster Tags (Voice Role Granted)', value: taggedUserIds.map((id, i) => `${i + 1}. <@${id}>`).join('\n') },
-          {
-            name: 'Voice Channel Role & Tourney Role',
-            value: `${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${teamName}\``} • \`@${config.verifiedRoleName || 'Verified Team'}\``,
-            inline: true
+        const newTeam: any = {
+          id: `team-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          slotNumber,
+          teamName,
+          captain: {
+            id: interaction.user.id,
+            username: interaction.user.username,
+            displayName: interaction.user.displayName || interaction.user.username,
+            avatar: interaction.user.displayAvatarURL() || `https://api.dicebear.com/7.x/bottts/svg?seed=${interaction.user.id}`
           },
-          {
-            name: 'Team Category & Private VC',
-            value: newTeam.teamVoiceChannelId
-              ? `📁 **${newTeam.teamCategoryName || teamName}**\n🔊 <#${newTeam.teamVoiceChannelId}> *(All tagged players granted ${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${teamName}\``} to join)*`
-              : `📁 **${teamName}**\n🔊 \`${teamName}\` *(Private Team VC)*`,
-            inline: true
-          },
-          { name: 'Private Room', value: idpChannel ? `<#${idpChannel.id}> *(Credentials before match)*` : 'Unlocked `#id-pass`', inline: false }
-        )
-        .setFooter({ text: 'FFA | Glacier Cup Manager™ • Voice Channel Role granted to all tagged players' })
-        .setTimestamp();
+          players: playersList.map(({ isBot, ...rest }) => rest),
+          registeredAt: new Date().toISOString(),
+          messageId: `modal-${interaction.id}`,
+          channelId: interaction.channelId || config.regChannel || 'registration',
+          isWaitlist,
+          group: assignedGroup,
+          teamRoleName: teamName,
+          teamCategoryName: teamName,
+          teamVoiceChannelName: teamName,
+          whatsappNumber1: cleanWa1,
+          region: parsedRegion
+        };
 
-      const components =
-        interaction.guild && newTeam.teamVoiceChannelId
-          ? [this.createVoiceConnectButtonRow(interaction.guild.id, newTeam.teamVoiceChannelId, newTeam.teamVoiceChannelName || teamName)]
-          : [];
-
-      await interaction.editReply({ embeds: [privateConfirmEmbed], components });
-
-      if (interaction.guild) {
-        const regCh = interaction.guild.channels.cache.find(
-          c =>
-            c.isTextBased() &&
-            (c.id === interaction.channelId ||
-              c.name === config.regChannel ||
-              c.name === '📝┃registration' ||
-              c.name === 'registration')
-        ) as TextChannel | undefined;
-
-        if (regCh) {
-          const publicEmbed = new EmbedBuilder()
-            .setTitle(isWaitlist ? '⏳ Team Added to Waiting List' : '✅ Team Registration Confirmed!')
-            .setColor(isWaitlist ? 0xFEE75C : 0x57F287)
-            .setDescription(
-              isWaitlist
-                ? `**${teamName}** (<@${interaction.user.id}>) secured **Waitlist #${slotNumber}**.`
-                : `**${teamName}** (<@${interaction.user.id}>) has secured **Slot #${slotNumber}** (${assignedGroup}) for **${config.title}**!`
-            )
-            .addFields(
-              { name: 'Team Name', value: `\`${teamName}\``, inline: true },
-              { name: isWaitlist ? 'Waitlist Position' : 'Allocated Slot', value: isWaitlist ? `\`#WL-${slotNumber}\`` : `\`Slot #${slotNumber}\` (${assignedGroup})`, inline: true },
-              { name: 'Remaining Slots', value: `\`${Math.max(0, config.totalSlots - updatedConfirmedCount)}\``, inline: true },
-              { name: 'Region', value: `\`${newTeam.region || 'India'}\``, inline: true },
-              {
-                name: 'Voice Channel & Role',
-                value: newTeam.teamVoiceChannelId
-                  ? `🔊 <#${newTeam.teamVoiceChannelId}> (${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${teamName}\``})`
-                  : `\`@${teamName}\``,
-                inline: true
-              },
-              { name: 'Roster Tags (Voice Role Assigned)', value: taggedUserIds.map((id, i) => `${i + 1}. <@${id}>`).join('\n'), inline: false }
-            )
-            .setFooter({ text: 'FFA | Glacier Cup Manager™ • Tagged players received the Team Voice Role to join VC' })
-            .setTimestamp();
-
-          await regCh.send({ embeds: [publicEmbed], components }).catch(() => {});
+        if (this.onTeamRegistered) {
+          this.onTeamRegistered(newTeam);
         }
-      }
+        latestTeams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
+        this.pendingRegistrationDrafts.delete(interaction.user.id);
 
-      this.scheduleSlotListUpdate(interaction.guild, config);
+        this.logEvent(
+          'success',
+          `✅ Slot ${isWaitlist ? `WL #${slotNumber}` : `#${slotNumber} (${assignedGroup})`} confirmed via Registration Panel for Team "${teamName}" (${parsedRegion}, Captain: @${newTeam.captain.displayName}, ${playersList.length} tags verified)`,
+          interaction.guild?.name
+        );
+
+        if (interaction.guild) {
+          await this.syncTeamRolesForRegistration(interaction.guild, newTeam, config);
+        }
+
+        const idpChannel = interaction.guild?.channels.cache.find(
+          c => c.name === config.idpChannel || c.name === '🔑┃id-pass' || c.name === 'id-pass'
+        );
+
+        const updatedConfirmedCount = latestTeams.filter(t => !t.isWaitlist).length;
+        const privateConfirmEmbed = new EmbedBuilder()
+          .setTitle(isWaitlist ? '⏳ Added to Waiting List' : '✅ Tournament Registration Confirmed!')
+          .setColor(isWaitlist ? 0xFEE75C : 0x57F287)
+          .setDescription(
+            isWaitlist
+              ? `Team **${teamName}** secured **Waitlist #${slotNumber}**.`
+              : `Congratulations! **${teamName}** has secured **Slot #${slotNumber}** for **${config.title}**!`
+          )
+          .addFields(
+            { name: 'Team Name', value: `\`${teamName}\``, inline: true },
+            { name: isWaitlist ? 'Waitlist Position' : 'Allocated Slot', value: isWaitlist ? `\`#WL-${slotNumber}\`` : `\`Slot #${slotNumber}\` (${assignedGroup})`, inline: true },
+            { name: 'Remaining Slots', value: `\`${Math.max(0, config.totalSlots - updatedConfirmedCount)}\``, inline: true },
+            { name: 'Region', value: `\`${newTeam.region || 'India'}\``, inline: true },
+            { name: 'WhatsApp No', value: newTeam.whatsappNumber1 ? `\`${newTeam.whatsappNumber1}\`` : '`Not provided`', inline: true },
+            { name: 'Captain', value: `<@${newTeam.captain.id}>`, inline: true },
+            { name: 'Roster Tags (Voice Role Granted)', value: taggedUserIds.map((id, i) => `${i + 1}. <@${id}>`).join('\n') },
+            {
+              name: 'Voice Channel Role & Tourney Role',
+              value: `${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``}${isWaitlist ? ' *(Waitlist)*' : ` • \`@${config.verifiedRoleName || 'Verified Team'}\``}`,
+              inline: true
+            },
+            {
+              name: 'Team Category & Private VC',
+              value: newTeam.teamVoiceChannelId
+                ? `📁 **${newTeam.teamCategoryName || teamName}**\n🔊 <#${newTeam.teamVoiceChannelId}> *(All team members granted ${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``} to join)*`
+                : `📁 **${teamName}**\n🔊 \`${teamName}\` *(Private Team VC)*`,
+              inline: true
+            },
+            { name: 'Private Room', value: idpChannel ? `<#${idpChannel.id}> *(Credentials before match)*` : 'Unlocked `#id-pass`', inline: false }
+          )
+          .setFooter({ text: 'FFA | Glacier Cup Manager™ • Voice Channel Role granted to all team members' })
+          .setTimestamp();
+
+        const components =
+          interaction.guild && newTeam.teamVoiceChannelId
+            ? [this.createVoiceConnectButtonRow(interaction.guild.id, newTeam.teamVoiceChannelId, newTeam.teamVoiceChannelName || teamName)]
+            : [];
+
+        await interaction.editReply({ embeds: [privateConfirmEmbed], components });
+
+        if (interaction.guild) {
+          const regCh = interaction.guild.channels.cache.find(
+            c =>
+              c.isTextBased() &&
+              (c.id === interaction.channelId ||
+                c.name === config.regChannel ||
+                c.name === '📝┃registration' ||
+                c.name === 'registration')
+          ) as TextChannel | undefined;
+
+          if (regCh) {
+            const publicEmbed = new EmbedBuilder()
+              .setTitle(isWaitlist ? '⏳ Team Added to Waiting List' : '✅ Team Registration Confirmed!')
+              .setColor(isWaitlist ? 0xFEE75C : 0x57F287)
+              .setDescription(
+                isWaitlist
+                  ? `**${teamName}** (<@${interaction.user.id}>) secured **Waitlist #${slotNumber}**.`
+                  : `**${teamName}** (<@${interaction.user.id}>) has secured **Slot #${slotNumber}** (${assignedGroup}) for **${config.title}**!`
+              )
+              .addFields(
+                { name: 'Team Name', value: `\`${teamName}\``, inline: true },
+                { name: isWaitlist ? 'Waitlist Position' : 'Allocated Slot', value: isWaitlist ? `\`#WL-${slotNumber}\`` : `\`Slot #${slotNumber}\` (${assignedGroup})`, inline: true },
+                { name: 'Remaining Slots', value: `\`${Math.max(0, config.totalSlots - updatedConfirmedCount)}\``, inline: true },
+                { name: 'Region', value: `\`${newTeam.region || 'India'}\``, inline: true },
+                {
+                  name: 'Voice Channel & Role',
+                  value: newTeam.teamVoiceChannelId
+                    ? `🔊 <#${newTeam.teamVoiceChannelId}> (${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``})`
+                    : `\`@${newTeam.teamRoleName || teamName}\``,
+                  inline: true
+                },
+                { name: 'Roster Tags (Voice Role Assigned)', value: taggedUserIds.map((id, i) => `${i + 1}. <@${id}>`).join('\n'), inline: false }
+              )
+              .setFooter({ text: 'FFA | Glacier Cup Manager™ • Team members received the Team Voice Role to join VC' })
+              .setTimestamp();
+
+            await regCh.send({ embeds: [publicEmbed], components }).catch(() => {});
+          }
+        }
+
+        await this.syncGuildChannels(config, interaction.guild);
+      });
     } finally {
-      taggedUserIds.forEach(id => this.inFlightPlayerIds.delete(id));
+      this.markMembersInFlight(allMemberIds, false);
     }
   }
 
@@ -3850,21 +4161,35 @@ class DiscordBotManager {
 
     const formatTeamEntry = (t: any, isWl: boolean) => {
       const slotStr = t.slotNumber < 10 ? `0${t.slotNumber}` : `${t.slotNumber}`;
-      const badge = isWl ? `⏳ **WAITLIST #${slotStr}**` : `🔢 **SLOT #${slotStr}** • **${t.group || this.calculateGroupForSlot(t.slotNumber, config)}**`;
+      const assignedGroup = isWl ? 'Waitlist' : (t.group || this.calculateGroupForSlot(t.slotNumber, config));
+      const statusLabel = isWl ? '⏳ Waitlisted' : '✅ Confirmed';
+      const badge = isWl
+        ? `⏳ **WAITLIST #${slotStr}** • **Status:** \`${statusLabel}\``
+        : `🔢 **SLOT #${slotStr}** • **${assignedGroup}** • **Status:** \`${statusLabel}\``;
       const regionStr = t.region || 'India';
       const wpStr = t.whatsappNumber1 || 'Not provided';
-      const captainMention = t.captain?.id ? `<@${t.captain.id}> (\`@${t.captain.username || t.captain.displayName}\`)` : `\`@${t.captain?.displayName || 'Unknown'}\``;
+      const capId = this.normalizeMemberId(t.captain?.id);
+      const captainMention =
+        capId && /^\d{15,20}$/.test(capId)
+          ? `<@${capId}> (\`@${t.captain?.username || t.captain?.displayName || capId}\`)`
+          : `\`@${t.captain?.displayName || t.captain?.username || 'Unknown'}\``;
       const playerMentions =
         Array.isArray(t.players) && t.players.length > 0
-          ? t.players.map((p: any, i: number) => `\`${i + 1}.\` <@${p.id}>`).join(' • ')
+          ? t.players
+              .map((p: any, i: number) => {
+                const pid = this.normalizeMemberId(p?.id);
+                return pid && /^\d{15,20}$/.test(pid)
+                  ? `\`${i + 1}.\` <@${pid}>`
+                  : `\`${i + 1}.\` \`@${p?.displayName || p?.username || pid || 'Player'}\``;
+              })
+              .join(' • ')
           : '*None*';
       return (
         `${badge}\n` +
-        `┣ 🏆 **Team Name:** \`${t.teamName}\`\n` +
-        `┣ 🌍 **Region:** \`${regionStr}\`\n` +
-        `┣ 📱 **WhatsApp No:** \`${wpStr}\`\n` +
-        `┣ 👑 **Registered By:** ${captainMention}\n` +
-        `┗ 👥 **Players Tags (${(t.players || []).length}):** ${playerMentions}`
+        `┣ 🏆 **Team Name:** \`${t.teamName}\` (${isWl ? `Waitlist #${slotStr}` : `Slot #${slotStr} • ${assignedGroup}`})\n` +
+        `┣ 👑 **Captain:** ${captainMention}\n` +
+        `┣ 👥 **Registered Players (${(t.players || []).length}):** ${playerMentions}\n` +
+        `┗ 🌍 **Region & Contact:** \`${regionStr}\` • 📱 \`${wpStr}\``
       );
     };
 
@@ -3989,30 +4314,48 @@ class DiscordBotManager {
     const waitlist = existingTeams.filter(t => t.isWaitlist);
     const embeds = this.formatRegistrationDetailsEmbeds(confirmed, waitlist, config);
 
-    const trackedIds = this.regDetailsMessageIds.get(channel.id) || [];
     try {
-      if (trackedIds.length > 0) {
-        const existingMsg = await channel.messages.fetch(trackedIds[0]).catch(() => null);
-        if (existingMsg) {
-          await existingMsg.edit({ embeds });
-          return { updated: true };
+      let trackedIds = [...(this.regDetailsMessageIds.get(channel.id) || [])];
+      if (trackedIds.length === 0) {
+        const recentMessages = await channel.messages.fetch({ limit: 15 }).catch(() => null);
+        if (recentMessages) {
+          const botMsgs = Array.from(recentMessages.values())
+            .filter((m: any) => m.author?.id === this.client?.user?.id)
+            .sort((a: any, b: any) => a.createdTimestamp - b.createdTimestamp);
+          trackedIds = botMsgs.map((m: any) => m.id);
         }
       }
 
-      const recentMessages = await channel.messages.fetch({ limit: 10 }).catch(() => null);
-      const botMsg = recentMessages?.find((m: any) => m.author?.id === this.client?.user?.id);
-      if (botMsg) {
-        this.regDetailsMessageIds.set(channel.id, [botMsg.id]);
-        await botMsg.edit({ embeds });
-        return { updated: true };
+      const newTrackedIds: string[] = [];
+      for (let i = 0; i < embeds.length; i++) {
+        const singleEmbed = [embeds[i]];
+        const existingId = trackedIds[i];
+        let updatedExisting = false;
+        if (existingId) {
+          const existingMsg = await channel.messages.fetch(existingId).catch(() => null);
+          if (existingMsg) {
+            await existingMsg.edit({ embeds: singleEmbed });
+            newTrackedIds.push(existingMsg.id);
+            updatedExisting = true;
+          }
+        }
+        if (!updatedExisting) {
+          const sentMsg = await channel.send({ embeds: singleEmbed });
+          if (sentMsg) {
+            newTrackedIds.push(sentMsg.id);
+          }
+        }
       }
 
-      const sentMsg = await channel.send({ embeds });
-      if (sentMsg) {
-        this.regDetailsMessageIds.set(channel.id, [sentMsg.id]);
-        return { updated: true };
+      for (let j = embeds.length; j < trackedIds.length; j++) {
+        const extraMsg = await channel.messages.fetch(trackedIds[j]).catch(() => null);
+        if (extraMsg) {
+          await extraMsg.delete().catch(() => {});
+        }
       }
-      return { updated: false, error: 'Failed to send registration-details message' };
+
+      this.regDetailsMessageIds.set(channel.id, newTrackedIds);
+      return { updated: true };
     } catch (err: any) {
       return { updated: false, error: err?.message || 'Permission error updating #registration-details' };
     }
@@ -4069,31 +4412,49 @@ class DiscordBotManager {
     });
 
     const finalEmbeds = payloadEmbeds.slice(0, 10);
-    const trackedMsgId = this.slotListMessageIds.get(channel.id);
 
     try {
-      if (trackedMsgId) {
-        const existingMsg = await channel.messages.fetch(trackedMsgId).catch(() => null);
-        if (existingMsg) {
-          await existingMsg.edit({ embeds: finalEmbeds });
-          return { updated: true };
+      let trackedIds = [...(this.slotListMessageIds.get(channel.id) || [])];
+      if (trackedIds.length === 0) {
+        const recentMessages = await channel.messages.fetch({ limit: 15 }).catch(() => null);
+        if (recentMessages) {
+          const botMsgs = Array.from(recentMessages.values())
+            .filter((m: any) => m.author?.id === this.client?.user?.id)
+            .sort((a: any, b: any) => a.createdTimestamp - b.createdTimestamp);
+          trackedIds = botMsgs.map((m: any) => m.id);
         }
       }
 
-      const recentMessages = await channel.messages.fetch({ limit: 10 }).catch(() => null);
-      const botMsg = recentMessages?.find(m => m.author.id === this.client?.user?.id);
-      if (botMsg) {
-        this.slotListMessageIds.set(channel.id, botMsg.id);
-        await botMsg.edit({ embeds: finalEmbeds });
-        return { updated: true };
+      const newTrackedIds: string[] = [];
+      for (let i = 0; i < finalEmbeds.length; i++) {
+        const singleEmbed = [finalEmbeds[i]];
+        const existingId = trackedIds[i];
+        let updatedExisting = false;
+        if (existingId) {
+          const existingMsg = await channel.messages.fetch(existingId).catch(() => null);
+          if (existingMsg) {
+            await existingMsg.edit({ embeds: singleEmbed });
+            newTrackedIds.push(existingMsg.id);
+            updatedExisting = true;
+          }
+        }
+        if (!updatedExisting) {
+          const sentMsg = await channel.send({ embeds: singleEmbed });
+          if (sentMsg) {
+            newTrackedIds.push(sentMsg.id);
+          }
+        }
       }
 
-      const sentMsg = await channel.send({ embeds: finalEmbeds });
-      if (sentMsg) {
-        this.slotListMessageIds.set(channel.id, sentMsg.id);
-        return { updated: true };
+      for (let j = finalEmbeds.length; j < trackedIds.length; j++) {
+        const extraMsg = await channel.messages.fetch(trackedIds[j]).catch(() => null);
+        if (extraMsg) {
+          await extraMsg.delete().catch(() => {});
+        }
       }
-      return { updated: false, error: 'Failed to send slot-list message' };
+
+      this.slotListMessageIds.set(channel.id, newTrackedIds);
+      return { updated: true };
     } catch (err: any) {
       return { updated: false, error: err?.message || 'Permission error updating #slot-list' };
     }
@@ -5059,8 +5420,13 @@ class DiscordBotManager {
     if (commandName === 'tagcheck') {
       const user = interaction.options.getUser('user', true);
       const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
-      const banned = this.blacklist.find(b => b.userId === user.id);
-      const foundTeam = teams.find(t => t.players.some((p: any) => p.id === user.id || p.username?.toLowerCase() === user.username.toLowerCase()));
+      const banned = this.blacklist.find(b => this.normalizeMemberId(b.userId) === user.id);
+      const foundTeam = teams.find(
+        t =>
+          this.getTeamMemberIds(t).has(user.id) ||
+          t.captain?.username?.toLowerCase() === user.username.toLowerCase() ||
+          t.players.some((p: any) => p.username?.toLowerCase() === user.username.toLowerCase())
+      );
 
       const embed = new EmbedBuilder()
         .setTitle('🔍 FFA | Glacier Cup Manager™ Player Tagcheck Dossier')
@@ -5313,7 +5679,8 @@ class DiscordBotManager {
 
   public async deleteSlot(
     slotNumber: number,
-    guild?: Guild
+    guild?: Guild,
+    options?: { isWaitlist?: boolean; teamId?: string }
   ): Promise<{
     success: boolean;
     deletedTeam?: any;
@@ -5326,33 +5693,66 @@ class DiscordBotManager {
       const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
       const syncWarnings: string[] = [];
 
-      const teamIdx = teams.findIndex(t => t.slotNumber === slotNumber && !t.isWaitlist);
-      if (teamIdx === -1) {
-        const wlIdx = teams.findIndex(t => t.slotNumber === slotNumber && t.isWaitlist);
-        if (wlIdx === -1) {
-          return { success: false, error: `No registered team found in Slot #${slotNumber}.` };
+      let targetIdx = -1;
+      if (options?.teamId) {
+        targetIdx = teams.findIndex(t => t.id === options.teamId);
+      }
+      if (targetIdx === -1 && options?.isWaitlist === true) {
+        targetIdx = teams.findIndex(t => t.slotNumber === slotNumber && t.isWaitlist);
+      }
+      if (targetIdx === -1 && options?.isWaitlist === false) {
+        targetIdx = teams.findIndex(t => t.slotNumber === slotNumber && !t.isWaitlist);
+      }
+      if (targetIdx === -1) {
+        targetIdx = teams.findIndex(t => t.slotNumber === slotNumber && !t.isWaitlist);
+        if (targetIdx === -1) {
+          targetIdx = teams.findIndex(t => t.slotNumber === slotNumber && t.isWaitlist);
         }
-        const deletedWl = teams.splice(wlIdx, 1)[0];
+      }
+
+      if (targetIdx === -1) {
+        return { success: false, error: `No registered team found in Slot #${slotNumber}.` };
+      }
+
+      const targetTeam = teams[targetIdx];
+
+      if (targetTeam.isWaitlist) {
+        const deletedWl = teams.splice(targetIdx, 1)[0];
         let wlCount = 1;
         teams.forEach(t => {
           if (t.isWaitlist) t.slotNumber = wlCount++;
         });
         if (guild) {
+          const verifiedRoleName = config?.verifiedRoleName || 'Verified Team';
+          const slotRoleName = config?.roleName || 'Confirmed Slot';
+          const verifiedRole = guild.roles.cache.find(r => r.name.toLowerCase() === verifiedRoleName.toLowerCase());
+          const slotRole = guild.roles.cache.find(r => r.name.toLowerCase() === slotRoleName.toLowerCase());
+          const managedRoles = [verifiedRole, slotRole].filter(Boolean);
+          if (managedRoles.length > 0) {
+            for (const uid of this.getTeamMemberIds(deletedWl)) {
+              if (!/^\d{15,20}$/.test(uid)) continue;
+              const member = guild.members.cache.get(uid) || (await guild.members.fetch(uid).catch(() => null));
+              if (member) {
+                for (const role of managedRoles) {
+                  if (role && member.roles.cache.has(role.id)) {
+                    await member.roles.remove(role).catch(() => {});
+                  }
+                }
+              }
+            }
+          }
           await this.cleanupTeamWorkspace(guild, deletedWl).catch(() => {});
         }
         if (this.onTeamDeleted) {
           this.onTeamDeleted(slotNumber);
         }
-        if (guild && config) {
-          const slotRes = await this.updateSlotListChannel(guild, config);
-          if (!slotRes.updated && slotRes.error) {
-            syncWarnings.push(`#slot-list update notice: ${slotRes.error}`);
-          }
+        if (config) {
+          await this.syncGuildChannels(config, guild);
         }
         return { success: true, deletedTeam: deletedWl, syncWarnings };
       }
 
-      const deletedTeam = teams.splice(teamIdx, 1)[0];
+      const deletedTeam = teams.splice(targetIdx, 1)[0];
 
       const firstWlIdx = teams.findIndex(t => t.isWaitlist);
       let promotedTeam: any = null;
@@ -5369,6 +5769,7 @@ class DiscordBotManager {
           t.group = this.calculateGroupForSlot(t.slotNumber, config);
         } else {
           t.slotNumber = waitlistSlot++;
+          t.group = undefined;
         }
       });
 
@@ -5382,51 +5783,37 @@ class DiscordBotManager {
         const managedRoles = [verifiedRole, slotRole].filter(Boolean);
 
         if (managedRoles.length > 0) {
-          for (const p of deletedTeam.players || []) {
+          for (const uid of this.getTeamMemberIds(deletedTeam)) {
+            if (!/^\d{15,20}$/.test(uid)) continue;
             try {
-              const member = guild.members.cache.get(p.id) || (await guild.members.fetch(p.id).catch(() => null));
+              const member = guild.members.cache.get(uid) || (await guild.members.fetch(uid).catch(() => null));
               if (member) {
                 for (const role of managedRoles) {
                   if (role && member.roles.cache.has(role.id)) {
                     await member.roles.remove(role).catch((err: any) => {
-                      syncWarnings.push(`Could not remove @${role.name} from @${p.displayName || p.username}: ${err.message}`);
+                      syncWarnings.push(`Could not remove @${role.name} from <@${uid}>: ${err.message}`);
                     });
                   }
                 }
               }
             } catch (err: any) {
-              syncWarnings.push(`Role removal lookup notice for ${p.id}: ${err.message}`);
+              syncWarnings.push(`Role removal lookup notice for ${uid}: ${err.message}`);
             }
           }
 
           if (promotedTeam) {
-            for (const p of promotedTeam.players || []) {
-              try {
-                const member = guild.members.cache.get(p.id) || (await guild.members.fetch(p.id).catch(() => null));
-                if (member) {
-                  for (const role of managedRoles) {
-                    if (role && !member.roles.cache.has(role.id)) {
-                      await member.roles.add(role).catch((err: any) => {
-                        syncWarnings.push(`Could not grant @${role.name} to promoted player @${p.displayName || p.username}: ${err.message}`);
-                      });
-                    }
-                  }
-                }
-              } catch (err: any) {
-                syncWarnings.push(`Role assignment lookup notice for promoted player ${p.id}: ${err.message}`);
-              }
+            const promoWarnings = await this.syncTeamRolesForRegistration(guild, promotedTeam, config);
+            if (promoWarnings.length > 0) {
+              syncWarnings.push(...promoWarnings);
             }
           }
         }
 
         await this.cleanupTeamWorkspace(guild, deletedTeam).catch(() => {});
+      }
 
-        if (config) {
-          const slotUpdate = await this.updateSlotListChannel(guild, config);
-          if (!slotUpdate.updated && slotUpdate.error) {
-            syncWarnings.push(`#slot-list sync notice: ${slotUpdate.error}`);
-          }
-        }
+      if (config) {
+        await this.syncGuildChannels(config, guild);
       }
 
       if (this.onTeamDeleted) {

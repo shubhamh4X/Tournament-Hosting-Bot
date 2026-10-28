@@ -250,6 +250,30 @@ export function parseRegistrationMessage(
   };
 }
 
+export function normalizeDiscordUserId(raw: unknown): string {
+  if (raw === null || raw === undefined) return '';
+  const str = String(raw).trim();
+  if (!str) return '';
+  const mentionMatch = str.match(/^<@!?(\d{15,22})>$/);
+  if (mentionMatch) return mentionMatch[1];
+  const rawIdMatch = str.match(/^@?(\d{15,22})$/);
+  if (rawIdMatch) return rawIdMatch[1];
+  return str.replace(/^[<@!]+|[>]+$/g, '').trim().toLowerCase();
+}
+
+export function getTeamMemberIds(team: Pick<TeamRegistration, 'captain' | 'players'>): Set<string> {
+  const ids = new Set<string>();
+  const captainId = normalizeDiscordUserId(team?.captain?.id);
+  if (captainId) ids.add(captainId);
+  if (Array.isArray(team?.players)) {
+    for (const p of team.players) {
+      const pid = normalizeDiscordUserId(p?.id);
+      if (pid) ids.add(pid);
+    }
+  }
+  return ids;
+}
+
 export function validateRegistration(
   teamName: string,
   players: DiscordUser[],
@@ -259,7 +283,8 @@ export function validateRegistration(
     unresolvedTags?: string[];
     malformedIds?: string[];
     rawIdsWhenDisabled?: string[];
-  }
+  },
+  captainUser?: DiscordUser
 ): ValidationResult {
   if (!config.title || config.totalSlots <= 0) {
     return {
@@ -287,11 +312,27 @@ export function validateRegistration(
 
   const cleanTeam = (teamName || '').replace(/^<\s*|\s*>$/g, '').trim();
   const lowerTeam = cleanTeam.toLowerCase();
-  if (!cleanTeam || cleanTeam.length < 2 || lowerTeam === 'team name' || lowerTeam === 'your team' || lowerTeam === 'your team name') {
+  const reservedNames = new Set([
+    'team name',
+    'your team',
+    'your team name',
+    'everyone',
+    'here',
+    '@everyone',
+    '@here',
+    'ffa bot manager',
+    'verified team',
+    'confirmed slot',
+    (config.managerRoleName || 'FFA Bot Manager').trim().toLowerCase(),
+    (config.verifiedRoleName || 'Verified Team').trim().toLowerCase(),
+    (config.roleName || 'Confirmed Slot').trim().toLowerCase()
+  ]);
+
+  if (!cleanTeam || cleanTeam.length < 2 || reservedNames.has(lowerTeam)) {
     return {
       valid: false,
       code: 'INVALID_TEAM_NAME',
-      error: 'Invalid Team Name! Please replace `<Team Name>` with your actual squad name (e.g. `Team Name: Team Glacier`).'
+      error: 'Invalid Team Name! Please provide a valid, non-reserved squad name (e.g. `Team Name: Team Glacier`).'
     };
   }
 
@@ -348,16 +389,15 @@ export function validateRegistration(
     }
   }
 
-  if (config.prohibitSelfDuplication) {
-    const ids = players.map(p => p.id);
-    const uniqueIds = new Set(ids);
-    if (uniqueIds.size !== ids.length) {
-      return {
-        valid: false,
-        code: 'SELF_DUPLICATION',
-        error: 'Tagcheck Failed! Duplicate players tagged in the same team roster. You cannot tag the same person multiple times.'
-      };
-    }
+  // Always enforce intra-team duplicate member ID check
+  const normalizedPlayerIds = players.map(p => normalizeDiscordUserId(p.id)).filter(Boolean);
+  const uniquePlayerIds = new Set(normalizedPlayerIds);
+  if (uniquePlayerIds.size !== normalizedPlayerIds.length) {
+    return {
+      valid: false,
+      code: 'SELF_DUPLICATION',
+      error: 'Tagcheck Failed! Duplicate member IDs detected within the same team roster. Every player on a team must be a unique Discord member.'
+    };
   }
 
   const duplicateTeamName = existingTeams.find(
@@ -371,17 +411,43 @@ export function validateRegistration(
     };
   }
 
-  if (config.prohibitDuplicateTags) {
-    for (const player of players) {
-      for (const existingTeam of existingTeams) {
-        const alreadyInTeam = existingTeam.players.some(p => p.id === player.id);
-        if (alreadyInTeam) {
-          return {
-            valid: false,
-            code: 'CROSS_TEAM_DUPLICATE',
-            error: `Tagcheck Failed! Player **@${player.displayName}** is already registered in **${existingTeam.teamName}** (${existingTeam.isWaitlist ? `Waitlist #${existingTeam.slotNumber}` : `Slot #${existingTeam.slotNumber}`}). Multi-team registration is prohibited!`
-          };
-        }
+  // Always enforce cross-team duplicate member ID check (captain + all players across confirmed + waitlisted teams)
+  const effectiveCaptain = captainUser || players[0];
+  const captainId = normalizeDiscordUserId(effectiveCaptain?.id);
+  const allSubmittedMembers: { id: string; label: string; isCaptain: boolean }[] = [];
+
+  if (captainId) {
+    allSubmittedMembers.push({
+      id: captainId,
+      label: effectiveCaptain?.displayName || effectiveCaptain?.username || captainId,
+      isCaptain: true
+    });
+  }
+
+  for (const p of players) {
+    const pid = normalizeDiscordUserId(p.id);
+    if (pid && !allSubmittedMembers.some(m => m.id === pid)) {
+      allSubmittedMembers.push({
+        id: pid,
+        label: p.displayName || p.username || pid,
+        isCaptain: pid === captainId
+      });
+    }
+  }
+
+  for (const submitted of allSubmittedMembers) {
+    for (const existingTeam of existingTeams) {
+      const existingMemberIds = getTeamMemberIds(existingTeam);
+      if (existingMemberIds.has(submitted.id)) {
+        const existingSlotDesc = existingTeam.isWaitlist
+          ? `Waitlist #${existingTeam.slotNumber}`
+          : `Slot #${existingTeam.slotNumber}${existingTeam.group ? ` (${existingTeam.group})` : ''}`;
+        const existingRole = normalizeDiscordUserId(existingTeam.captain?.id) === submitted.id ? 'captain' : 'player';
+        return {
+          valid: false,
+          code: 'CROSS_TEAM_DUPLICATE',
+          error: `Tagcheck Failed! Member **@${submitted.label}** (\`${submitted.id}\`) is already registered as ${existingRole} in **${existingTeam.teamName}** (${existingSlotDesc}). A member can belong to only one team until their existing registration is deleted.`
+        };
       }
     }
   }

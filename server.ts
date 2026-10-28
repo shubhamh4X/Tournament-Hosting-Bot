@@ -375,167 +375,146 @@ async function startServer() {
       }
       const cleanWa1 = waNorm.formatted;
 
-      const confirmedCount = registeredTeams.filter(t => !t.isWaitlist).length;
-      const waitlistCount = registeredTeams.filter(t => t.isWaitlist).length;
-
-      if (!players || players.length < config.requiredTags) {
+      const rawPlayers = Array.isArray(players) ? players : [];
+      if (rawPlayers.length < config.requiredTags) {
         return {
           status: 400,
           body: {
             success: false,
             code: 'INSUFFICIENT_TAGS',
-            error: `Tagcheck Failed! Exactly ${config.requiredTags} players are required for ${config.format} (as set during setup). You provided ${players ? players.length : 0}.`
+            error: `Tagcheck Failed! Exactly ${config.requiredTags} players are required for ${config.format} (as set during setup). You provided ${rawPlayers.length}.`
           }
         };
       }
 
-      if (players.length > config.requiredTags) {
+      if (rawPlayers.length > config.requiredTags) {
         return {
           status: 400,
           body: {
             success: false,
             code: 'EXCESSIVE_TAGS',
-            error: `Tagcheck Failed! Only ${config.requiredTags} players are allowed per team as set during setup (no extra players or tags). You provided ${players.length}.`
+            error: `Tagcheck Failed! Only ${config.requiredTags} players are allowed per team as set during setup (no extra players or tags). You provided ${rawPlayers.length}.`
           }
         };
       }
 
-      if (config.prohibitSelfDuplication) {
-        const playerIds = players.map((p: any) => p.id);
-        const uniqueIds = new Set(playerIds);
-        if (uniqueIds.size !== playerIds.length) {
+      const client = (discordBot as any).client;
+      const guild = client?.guilds?.cache?.first() || null;
+
+      const resolvedPlayers: { id: string; username: string; displayName: string; avatar: string; isBot?: boolean }[] = [];
+      for (const rawPlayer of rawPlayers) {
+        const resolved = await discordBot.resolveSubmittedPlayer(rawPlayer, guild, registeredTeams);
+        if (!resolved || !resolved.id) {
           return {
             status: 400,
             body: {
               success: false,
-              code: 'DUPLICATE_PLAYERS_IN_TEAM',
-              error: 'Tagcheck Failed! Duplicate players detected in the same team roster. Every player tag must be unique.'
+              code: 'INVALID_PLAYER_ID',
+              error: 'Tagcheck Failed! Every player in the roster must have a valid Discord user ID or tag.'
             }
           };
         }
+        resolvedPlayers.push(resolved);
       }
 
-      const blacklist = discordBot.getBlacklist();
-      for (const player of players) {
-        const banned = blacklist.find(b => b.userId === player.id || b.username.toLowerCase() === (player.username || '').toLowerCase() || b.username.toLowerCase() === (player.displayName || '').toLowerCase());
-        if (banned) {
-          return {
-            status: 400,
-            body: {
-              success: false,
-              code: 'PLAYER_BLACKLISTED',
-              error: `Tagcheck Failed! Player @${player.displayName || player.username} is BLACKLISTED from this tournament (Reason: ${banned.reason}).`
-            }
-          };
-        }
-      }
+      const resolvedCaptain = captain
+        ? (await discordBot.resolveSubmittedPlayer(captain, guild, registeredTeams)) || resolvedPlayers[0]
+        : resolvedPlayers[0];
 
-      const captainId = captain?.id || players[0]?.id;
-      const captainExistingTeam = registeredTeams.find(t => t.captain?.id === captainId);
+      const captainId = discordBot.normalizeMemberId(resolvedCaptain?.id || resolvedPlayers[0]?.id);
 
-      const duplicateTeamName = registeredTeams.find(
-        t => (!captainExistingTeam || t.id !== captainExistingTeam.id) && t.teamName.toLowerCase() === lowerName
-      );
-      if (duplicateTeamName) {
+      const validation = discordBot.validateTeamRegistrationRoster({
+        teamName: cleanedName,
+        captainId,
+        players: resolvedPlayers,
+        config,
+        existingTeams: registeredTeams
+      });
+
+      if (!validation.valid) {
         return {
           status: 400,
           body: {
             success: false,
-            code: 'DUPLICATE_TEAM_NAME',
-            error: `Tagcheck Failed! A team named "${duplicateTeamName.teamName}" is already registered in Slot #${duplicateTeamName.slotNumber}.`
+            code: validation.code || 'REGISTRATION_REJECTED',
+            error: (validation.error || 'Tagcheck Failed! Registration validation rejected this roster.').replace(/\*\*/g, '')
           }
         };
       }
 
-      if (config.prohibitDuplicateTags) {
-        for (const player of players) {
-          for (const existingTeam of registeredTeams) {
-            if (captainExistingTeam && existingTeam.id === captainExistingTeam.id) continue;
-            const isRegistered = existingTeam.players.some((p: any) => p.id === player.id);
-            if (isRegistered) {
-              return {
-                status: 400,
-                body: {
-                  success: false,
-                  code: 'PLAYER_ALREADY_REGISTERED',
-                  error: `Tagcheck Failed! Player @${player.displayName} is already registered in team "${existingTeam.teamName}" (Slot #${existingTeam.slotNumber}). Cross-team duplicate tagging is prohibited!`
-                }
-              };
-            }
+      const allMemberIds = Array.from(
+        new Set([captainId, ...resolvedPlayers.map(p => discordBot.normalizeMemberId(p.id))].filter(Boolean))
+      );
+      discordBot.markMembersInFlight(allMemberIds, true);
+
+      try {
+        const currentConfirmed = registeredTeams.filter(t => !t.isWaitlist);
+        const currentWaitlist = registeredTeams.filter(t => t.isWaitlist);
+        const isWaitlist = currentConfirmed.length >= config.totalSlots;
+
+        let slotNumber = 1;
+        if (isWaitlist) {
+          slotNumber = currentWaitlist.length + 1;
+        } else {
+          const usedSlots = new Set(currentConfirmed.map(t => t.slotNumber));
+          while (usedSlots.has(slotNumber) && slotNumber <= config.totalSlots) {
+            slotNumber++;
           }
         }
-      }
 
-      if (captainExistingTeam) {
-        const client = (discordBot as any).client;
-        const guild = client?.guilds?.cache?.first();
-        if (guild) {
-          await discordBot.cleanupTeamWorkspace(guild, captainExistingTeam).catch(() => {});
-        }
-        const idx = registeredTeams.findIndex(t => t.id === captainExistingTeam.id);
-        if (idx !== -1) {
-          registeredTeams.splice(idx, 1);
-        }
-      }
+        const assignedGroup = isWaitlist ? undefined : discordBot.calculateGroupForSlot(slotNumber, config);
 
-      const isWaitlist = captainExistingTeam ? captainExistingTeam.isWaitlist : confirmedCount >= config.totalSlots;
-      const slotNumber = captainExistingTeam ? captainExistingTeam.slotNumber : (isWaitlist ? waitlistCount + 1 : confirmedCount + 1);
+        const cleanCaptain = {
+          id: resolvedCaptain.id,
+          username: resolvedCaptain.username,
+          displayName: resolvedCaptain.displayName,
+          avatar: resolvedCaptain.avatar
+        };
+        const cleanPlayers = resolvedPlayers.map(({ isBot, ...rest }) => rest);
 
-      const assignedGroup = isWaitlist ? undefined : discordBot.calculateGroupForSlot(slotNumber, config);
-
-      const newTeam: TeamRegistration = {
-        id: `team-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        slotNumber,
-        teamName: cleanedName,
-        captain: captain || players[0],
-        players,
-        registeredAt: new Date().toISOString(),
-        messageId: messageId || `msg-${Date.now()}`,
-        channelId: channelId || config.regChannel,
-        isWaitlist,
-        group: isWaitlist ? undefined : assignedGroup,
-        teamRoleName: cleanedName,
-        teamCategoryName: cleanedName,
-        teamVoiceChannelName: cleanedName,
-        whatsappNumber1: cleanWa1,
-        region: region as TournamentRegion
-      };
-
-      if (config.autoCreateTeamVoice !== false) {
-        const client = (discordBot as any).client;
-        const guild = client?.guilds?.cache?.first();
-        if (guild) {
-          await discordBot.provisionTeamWorkspace(
-            guild,
-            newTeam,
-            players.map((p: any) => p.id)
-          ).catch(() => {});
-        }
-      }
-
-      registeredTeams.push(newTeam);
-      registeredTeams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
-      saveTournamentState();
-
-      const client = (discordBot as any).client;
-      const guild = client?.guilds?.cache?.first();
-      if (guild) {
-        await discordBot.updateSlotListChannel(guild, config).catch(() => {});
-      }
-
-      const newConfirmedCount = registeredTeams.filter(t => !t.isWaitlist).length;
-
-      return {
-        status: 200,
-        body: {
-          success: true,
-          team: newTeam,
-          isWaitlist,
+        const newTeam: TeamRegistration = {
+          id: `team-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           slotNumber,
-          autoClosed: false,
-          remainingSlots: Math.max(0, config.totalSlots - newConfirmedCount)
+          teamName: cleanedName,
+          captain: cleanCaptain,
+          players: cleanPlayers,
+          registeredAt: new Date().toISOString(),
+          messageId: messageId || `msg-${Date.now()}`,
+          channelId: channelId || config.regChannel,
+          isWaitlist,
+          group: isWaitlist ? undefined : assignedGroup,
+          teamRoleName: cleanedName,
+          teamCategoryName: cleanedName,
+          teamVoiceChannelName: cleanedName,
+          whatsappNumber1: cleanWa1,
+          region: region as TournamentRegion
+        };
+
+        registeredTeams.push(newTeam);
+        registeredTeams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
+        saveTournamentState();
+
+        if (guild) {
+          await discordBot.syncTeamRolesForRegistration(guild, newTeam, config).catch(() => {});
         }
-      };
+        await discordBot.syncGuildChannels(config, guild).catch(() => {});
+
+        const newConfirmedCount = registeredTeams.filter(t => !t.isWaitlist).length;
+
+        return {
+          status: 200,
+          body: {
+            success: true,
+            team: newTeam,
+            isWaitlist,
+            slotNumber,
+            autoClosed: false,
+            remainingSlots: Math.max(0, config.totalSlots - newConfirmedCount)
+          }
+        };
+      } finally {
+        discordBot.markMembersInFlight(allMemberIds, false);
+      }
     });
 
     return res.status(result.status).json(result.body);
@@ -551,7 +530,10 @@ async function startServer() {
     const client = (discordBot as any).client;
     const guild = guildId ? client?.guilds.cache.get(guildId) : client?.guilds.cache.first();
 
-    const result = await discordBot.deleteSlot(targetTeam.slotNumber, guild);
+    const result = await discordBot.deleteSlot(targetTeam.slotNumber, guild, {
+      teamId: targetTeam.id,
+      isWaitlist: targetTeam.isWaitlist
+    });
     if (!result.success) {
       return res.status(400).json({ error: result.error || 'Failed to remove team slot' });
     }
@@ -570,16 +552,33 @@ async function startServer() {
       const client = (discordBot as any).client;
       const guild = client?.guilds?.cache?.first();
       if (guild) {
+        const verifiedRoleName = config.verifiedRoleName || 'Verified Team';
+        const slotRoleName = config.roleName || 'Confirmed Slot';
+        const verifiedRole = guild.roles.cache.find((r: any) => r.name.toLowerCase() === verifiedRoleName.toLowerCase());
+        const slotRole = guild.roles.cache.find((r: any) => r.name.toLowerCase() === slotRoleName.toLowerCase());
+        const managedRoles = [verifiedRole, slotRole].filter(Boolean);
+
         for (const t of registeredTeams) {
+          if (managedRoles.length > 0) {
+            for (const uid of discordBot.getTeamMemberIds(t)) {
+              if (!/^\d{15,20}$/.test(uid)) continue;
+              const member = guild.members.cache.get(uid) || (await guild.members.fetch(uid).catch(() => null));
+              if (member) {
+                for (const role of managedRoles) {
+                  if (role && member.roles.cache.has(role.id)) {
+                    await member.roles.remove(role).catch(() => {});
+                  }
+                }
+              }
+            }
+          }
           await discordBot.cleanupTeamWorkspace(guild, t).catch(() => {});
         }
       }
       registeredTeams.splice(0, registeredTeams.length);
       config.status = 'open';
       saveTournamentState();
-      if (guild) {
-        await discordBot.updateSlotListChannel(guild, config).catch(() => {});
-      }
+      await discordBot.syncGuildChannels(config, guild).catch(() => {});
     });
     res.json({ success: true, message: 'All registrations and slots reset successfully.' });
   });
