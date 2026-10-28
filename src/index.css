@@ -3,11 +3,11 @@
 @layer base {
   :root {
     color-scheme: dark;
-    --font-inter: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-    --font-outfit: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --font-outfit: 'Outfit', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     --background: #000000;
     --foreground: #ffffff;
-    font-family: var(--font-inter);
+    font-family: var(--font-sans);
   }
 
   html,
@@ -15,6 +15,7 @@
     background-color: #000000;
     color: #FFFFFF;
     overflow-x: hidden;
+    font-family: var(--font-sans);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -32,7 +33,7 @@
 
   h1, h2, h3, h4, .font-display {
     font-family: var(--font-outfit);
-    letter-spacing: -0.03em;
+    letter-spacing: -0.025em;
   }
 
   code, pre, kbd, .font-mono {
@@ -165,27 +166,74 @@
 }
 
 .btn-glacier-primary {
-  background: linear-gradient(135deg, #0EA5E9 0%, #0284C7 55%, #1D4ED8 100%);
+  position: relative;
+  overflow: hidden;
+  font-family: var(--font-outfit);
+  letter-spacing: 0.01em;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0) 52%),
+    linear-gradient(135deg, #0EA5E9 0%, #0284C7 52%, #1D4ED8 100%);
+  border: 1px solid rgba(125, 211, 252, 0.42);
   color: #FFFFFF;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
   box-shadow:
-    0 8px 24px -6px rgba(14, 165, 233, 0.38),
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.24);
-  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.18s ease, filter 0.18s ease;
+    0 0 0 1px rgba(2, 132, 199, 0.22),
+    0 10px 26px -6px rgba(14, 165, 233, 0.48),
+    0 2px 6px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 0 rgba(224, 242, 254, 0.45),
+    inset 0 -1px 0 0 rgba(12, 74, 110, 0.5);
+  transition:
+    transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.2s ease,
+    border-color 0.2s ease,
+    filter 0.2s ease;
+}
+
+.btn-glacier-primary::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 65%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.22),
+    transparent
+  );
+  transform: skewX(-20deg);
+  transition: left 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
 }
 
 .btn-glacier-primary:hover:not(:disabled) {
-  filter: brightness(1.07);
+  border-color: rgba(186, 230, 253, 0.72);
+  filter: brightness(1.06);
   box-shadow:
-    0 12px 28px -6px rgba(56, 189, 248, 0.46),
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.3);
+    0 0 0 1px rgba(56, 189, 248, 0.35),
+    0 14px 32px -6px rgba(56, 189, 248, 0.6),
+    0 4px 10px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.6),
+    inset 0 -1px 0 0 rgba(12, 74, 110, 0.45);
   transform: translateY(-1px);
+}
+
+.btn-glacier-primary:hover:not(:disabled)::before {
+  left: 145%;
 }
 
 .btn-glacier-primary:active:not(:disabled) {
   transform: translateY(0);
+  filter: brightness(0.98);
+  box-shadow:
+    0 4px 14px -4px rgba(14, 165, 233, 0.45),
+    inset 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 
 .btn-glacier-secondary {
+  font-family: var(--font-outfit);
+  letter-spacing: 0.005em;
   background: rgba(255, 255, 255, 0.035);
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: #FFFFFF;

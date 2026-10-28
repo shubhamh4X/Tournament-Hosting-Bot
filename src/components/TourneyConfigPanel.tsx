@@ -25,6 +25,7 @@ export const TourneyConfigPanel: React.FC<TourneyConfigPanelProps> = ({
   onResetTeams
 }) => {
   const [formData, setFormData] = useState<TournamentConfig>({ ...config });
+  const [selectedFormat, setSelectedFormat] = useState<'Squad' | 'Trio' | 'Duo' | 'Solo' | null>(null);
   const [savedSuccess, setSavedSuccess] = useState<boolean>(false);
   const [showResetConfirm, setShowResetConfirm] = useState<boolean>(false);
 
@@ -35,7 +36,8 @@ export const TourneyConfigPanel: React.FC<TourneyConfigPanelProps> = ({
     }));
   }, [config]);
 
-  const handleFormatChange = (newFormat: 'Squad' | 'Trio' | 'Duo' | 'Solo' | 'Custom') => {
+  const handleFormatChange = (newFormat: 'Squad' | 'Trio' | 'Duo' | 'Solo') => {
+    setSelectedFormat(newFormat);
     let reqTags = 4;
     if (newFormat === 'Squad') {
       reqTags = 4;
@@ -79,8 +81,6 @@ export const TourneyConfigPanel: React.FC<TourneyConfigPanelProps> = ({
               className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[11px] font-mono font-bold uppercase border ${
                 formData.status === 'open'
                   ? 'bg-[#10B981]/10 text-[#10B981] border-[#10B981]/25'
-                  : formData.status === 'paused'
-                  ? 'bg-[#F59E0B]/10 text-[#F59E0B] border-[#F59E0B]/25'
                   : 'bg-[#EF4444]/10 text-[#F87171] border-[#EF4444]/25'
               }`}
             >
@@ -88,8 +88,6 @@ export const TourneyConfigPanel: React.FC<TourneyConfigPanelProps> = ({
                 className={`w-1.5 h-1.5 rounded-full ${
                   formData.status === 'open'
                     ? 'bg-[#10B981] shadow-[0_0_8px_#10B981]'
-                    : formData.status === 'paused'
-                    ? 'bg-[#F59E0B]'
                     : 'bg-[#EF4444]'
                 }`}
               />
@@ -97,39 +95,8 @@ export const TourneyConfigPanel: React.FC<TourneyConfigPanelProps> = ({
             </span>
           </div>
           <p className="text-xs sm:text-sm text-white/55 max-w-2xl leading-relaxed">
-            Configure tag-basis verification rules, slot allocations, EasyTag automation, and Discord channel bindings.
+            Configure tag-basis verification rules, slot allocations, EasyTag automation, and Discord channel bindings. Registration starts automatically on setup and continues until stopped.
           </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1.5 p-1.5 bg-white/[0.03] rounded-2xl border border-white/[0.08] self-start lg:self-auto">
-          {(['open', 'paused', 'closed'] as const).map(st => (
-            <button
-              key={st}
-              type="button"
-              onClick={() => {
-                setFormData(prev => ({ ...prev, status: st }));
-                onSaveConfig({ status: st, explicitStatusCommand: true });
-                if (st === 'open') {
-                  fetch('/api/bot/start-registration', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => {});
-                } else if (st === 'paused') {
-                  fetch('/api/bot/pause-registration', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => {});
-                } else if (st === 'closed') {
-                  fetch('/api/bot/stop-registration', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => {});
-                }
-              }}
-              className={`h-9 px-4 rounded-xl text-xs font-semibold capitalize transition-all cursor-pointer ${
-                formData.status === st
-                  ? st === 'open'
-                    ? 'bg-[#10B981] text-[#04130D] font-bold shadow-[0_4px_16px_rgba(16,185,129,0.35)]'
-                    : st === 'paused'
-                    ? 'bg-[#F59E0B] text-[#170E02] font-bold shadow-[0_4px_16px_rgba(245,158,11,0.35)]'
-                    : 'bg-[#EF4444] text-white font-bold shadow-[0_4px_16px_rgba(239,68,68,0.35)]'
-                  : 'text-white/55 hover:text-white hover:bg-white/[0.05]'
-              }`}
-            >
-              {st === 'open' ? 'Open (/start-registration)' : st === 'paused' ? 'Paused (/pause-registration)' : 'Closed (/stop-registration)'}
-            </button>
-          ))}
         </div>
       </div>
 
@@ -188,7 +155,7 @@ export const TourneyConfigPanel: React.FC<TourneyConfigPanelProps> = ({
                     type="button"
                     onClick={() => handleFormatChange(fmt)}
                     className={`h-11 px-3 text-xs font-bold rounded-xl border transition-all cursor-pointer ${
-                      formData.format === fmt
+                      selectedFormat === fmt
                         ? 'btn-glacier-primary border-transparent text-white'
                         : 'bg-white/[0.02] border-white/[0.08] text-white/55 hover:text-white'
                     }`}
@@ -201,47 +168,36 @@ export const TourneyConfigPanel: React.FC<TourneyConfigPanelProps> = ({
 
             <div>
               <label className="block text-xs font-medium text-white/70 mb-2">
-                Teams in Each Group (<span className="font-mono text-[#38BDF8]">{Math.max(1, Math.ceil((formData.totalSlots || 20) / Math.max(1, formData.teamsPerGroup || formData.totalSlots || 20)))} Group(s)</span>)
+                Teams in Each Group (
+                <span className="font-mono text-[#38BDF8]">
+                  {formData.totalSlots > 0
+                    ? `${Math.max(1, Math.ceil(formData.totalSlots / Math.max(1, formData.teamsPerGroup || formData.totalSlots)))} Group(s)`
+                    : 'Set Total Slots'}
+                </span>
+                )
               </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min="1"
-                  max="500"
-                  value={formData.teamsPerGroup || formData.totalSlots || 20}
-                  onChange={e => {
-                    const tpg = Math.max(1, Math.min(500, parseInt(e.target.value, 10) || 20));
-                    const total = Math.max(2, formData.totalSlots || 20);
-                    setFormData({
-                      ...formData,
-                      teamsPerGroup: tpg,
-                      groupsCount: Math.max(1, Math.ceil(total / tpg))
-                    });
-                  }}
-                  className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-mono tabular-nums"
-                />
-                {[12, 16, 20, 25].map(tpg => (
-                  <button
-                    key={tpg}
-                    type="button"
-                    onClick={() => {
-                      const total = Math.max(2, formData.totalSlots || 20);
-                      setFormData({
-                        ...formData,
-                        teamsPerGroup: tpg,
-                        groupsCount: Math.max(1, Math.ceil(total / tpg))
-                      });
-                    }}
-                    className={`h-11 px-3 text-xs font-mono font-semibold rounded-xl border transition-all cursor-pointer shrink-0 ${
-                      (formData.teamsPerGroup || formData.totalSlots) === tpg
-                        ? 'btn-glacier-primary border-transparent text-white'
-                        : 'bg-white/[0.02] border-white/[0.08] text-white/55 hover:text-white'
-                    }`}
-                  >
-                    {tpg}/Grp
-                  </button>
-                ))}
-              </div>
+              <input
+                type="number"
+                min="1"
+                max="500"
+                value={formData.teamsPerGroup || ''}
+                placeholder="Enter teams per group (1–500)"
+                onChange={e => {
+                  const rawVal = e.target.value;
+                  if (rawVal === '') {
+                    setFormData({ ...formData, teamsPerGroup: 0 });
+                    return;
+                  }
+                  const tpg = Math.max(1, Math.min(500, parseInt(rawVal, 10) || 1));
+                  const total = formData.totalSlots || 0;
+                  setFormData({
+                    ...formData,
+                    teamsPerGroup: tpg,
+                    groupsCount: total > 0 ? Math.max(1, Math.ceil(total / tpg)) : 1
+                  });
+                }}
+                className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-mono tabular-nums placeholder-white/35"
+              />
             </div>
 
             <div>
@@ -451,20 +407,26 @@ export const TourneyConfigPanel: React.FC<TourneyConfigPanelProps> = ({
                 type="number"
                 min="2"
                 max="500"
-                value={formData.totalSlots}
+                value={formData.totalSlots || ''}
+                placeholder="Enter total slots (2–500)"
                 onChange={e => {
-                  const total = Math.max(2, Math.min(500, parseInt(e.target.value, 10) || 20));
+                  const rawVal = e.target.value;
+                  if (rawVal === '') {
+                    setFormData({ ...formData, totalSlots: 0 });
+                    return;
+                  }
+                  const total = Math.max(1, Math.min(500, parseInt(rawVal, 10) || 0));
                   const tpg = formData.teamsPerGroup && formData.teamsPerGroup > 0 ? formData.teamsPerGroup : total;
                   setFormData({
                     ...formData,
                     totalSlots: total,
-                    groupsCount: Math.max(1, Math.ceil(total / tpg))
+                    groupsCount: total > 0 ? Math.max(1, Math.ceil(total / Math.max(1, tpg))) : 1
                   });
                 }}
-                className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-mono tabular-nums"
+                className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-mono tabular-nums placeholder-white/35"
               />
               <span className="text-[11px] font-mono tabular-nums text-white/45 mt-2 block">
-                Current occupied: <span className="text-[#38BDF8]">{confirmedCount}</span>/{formData.totalSlots}
+                Current occupied: <span className="text-[#38BDF8]">{confirmedCount}</span>/{formData.totalSlots || 'Unset (2–500)'}
               </span>
             </div>
 

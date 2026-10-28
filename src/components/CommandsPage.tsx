@@ -37,7 +37,7 @@ const COMMANDS_DATA: CommandItem[] = [
     category: 'setup',
     permission: 'Admin / Staff',
     params: 'slots (int), tags (int), groups (int), title (string), rules (string)',
-    description: 'Auto-creates the tournament category (🏆 ┃ GLACIER CUP), #rules-format, #registration, #slot-list, #id-pass, #registration-details, and @Verified Team + @Confirmed Slot + @FFA Bot Manager roles in one step.',
+    description: 'Auto-creates the tournament category (🏆 ┃ GLACIER CUP), #rules-format, #registration, #slot-list, #id-pass, #registration-details, and @Verified Team + @Confirmed Slot + @FFA Bot Manager roles in one step. Registration starts immediately and continues until /stop-registration is executed.',
     examples: ['/setup slots:20 tags:4 groups:20 title:Glacier Cup', '!setup 20 4 20 Glacier Cup']
   },
   {
@@ -47,7 +47,7 @@ const COMMANDS_DATA: CommandItem[] = [
     category: 'setup',
     permission: 'Admin / Staff',
     params: 'slots, tags, groups (teams/group), title, rules',
-    description: 'Provisions a new tournament with custom slot counts and multi-group breakdowns (Group A, Group B, Group C, etc.).',
+    description: 'Provisions a new tournament with custom slot counts and multi-group breakdowns (Group A, Group B, Group C, etc.), starting registration immediately.',
     examples: ['/create tournament slots:40 tags:4 groups:20 title:Championship']
   },
   {
@@ -60,32 +60,13 @@ const COMMANDS_DATA: CommandItem[] = [
     examples: ['/setup_registration_panel']
   },
   {
-    name: 'Start / Resume Registration',
-    syntax: '/start-registration',
-    prefixSyntax: '!start-registration (or !unlock)',
-    category: 'setup',
-    permission: 'Admin / Staff',
-    description: 'Unlocks #registration so players can tag squad members to claim slots, and marks tournament status as OPEN.',
-    examples: ['/start-registration', '!unlock']
-  },
-  {
-    name: 'Pause Registration',
-    syntax: '/pause-registration',
-    prefixSyntax: '!pause-registration [reason] (or !pause)',
-    category: 'setup',
-    permission: 'Admin / Staff',
-    params: 'reason (optional)',
-    description: 'Temporarily locks #registration with an informative notice while staff review rosters or adjust parameters.',
-    examples: ['/pause-registration reason:Reviewing waitlist entries']
-  },
-  {
     name: 'Stop / End Registration',
     syntax: '/stop-registration',
     prefixSyntax: '!stop-registration [reason] (or !lock)',
     category: 'setup',
     permission: 'Admin / Staff',
     params: 'reason (optional)',
-    description: 'Permanently ends registrations and locks #registration when all slots and waitlist queues are full.',
+    description: 'Stops tournament registrations and locks #registration when you want to close registration.',
     examples: ['/stop-registration reason:All slots filled']
   },
   {
@@ -206,6 +187,15 @@ const COMMANDS_DATA: CommandItem[] = [
     permission: 'Public',
     description: 'Shows live confirmed slot count, waitlist position, group divisions, and remaining available slots.',
     examples: ['/slots']
+  },
+  {
+    name: 'Check Active Tournament',
+    syntax: '/active-tournament',
+    prefixSyntax: '!active-tournament',
+    category: 'info',
+    permission: 'Public',
+    description: 'Checks whether any tournament is currently active in the server and displays its registration status, slot count, format, and active channels.',
+    examples: ['/active-tournament', '!active-tournament']
   }
 ];
 

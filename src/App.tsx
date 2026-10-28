@@ -6,6 +6,7 @@ import {
   GatewayOperationalState
 } from './types/tournament';
 import { TourneyConfigPanel } from './components/TourneyConfigPanel';
+import { RulesEmbedStudio } from './components/RulesEmbedStudio';
 import { SlotRosterTable } from './components/SlotRosterTable';
 import { RoomIdpModal } from './components/RoomIdpModal';
 import { LiveBotRunner } from './components/LiveBotRunner';
@@ -21,7 +22,6 @@ import {
   ArrowRight,
   Activity,
   Layers,
-  Sparkles,
   ExternalLink,
   SlidersHorizontal
 } from 'lucide-react';
@@ -52,9 +52,10 @@ export default function App() {
     format: 'Squad',
     requiredTags: 4,
     maxTags: 4,
-    totalSlots: 20,
+    totalSlots: 0,
     waitlistSlots: 5,
     groupsCount: 1,
+    teamsPerGroup: 0,
     categoryName: '',
     verifiedRoleName: 'Verified Team',
     managerRoleName: 'FFA Bot Manager',
@@ -65,7 +66,7 @@ export default function App() {
     autoDeleteInvalid: true,
     autoDeleteSeconds: 5,
     autoCreateTeamVoice: true,
-    status: 'open',
+    status: 'closed',
     regChannel: 'registration',
     slotListChannel: 'slot-list',
     idpChannel: 'id-pass',
@@ -75,6 +76,7 @@ export default function App() {
 
   const [registeredTeams, setRegisteredTeams] = useState<TeamRegistration[]>([]);
   const [roomDispatch, setRoomDispatch] = useState<RoomCredentials | null>(null);
+  const [rulesViewTab, setRulesViewTab] = useState<'embed' | 'settings'>('embed');
 
   const navigateTo = (page: AppPage) => {
     setCurrentPage(page);
@@ -171,7 +173,17 @@ export default function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newConfig)
-    }).catch(() => {});
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data?.config) {
+          setConfig(prev => ({ ...prev, ...data.config }));
+        }
+        if (Array.isArray(data?.teams)) {
+          setRegisteredTeams(data.teams);
+        }
+      })
+      .catch(() => {});
   };
 
   const handleKickTeam = (teamId: string) => {
@@ -221,7 +233,7 @@ export default function App() {
     <div className="min-h-screen bg-black text-white flex flex-col font-sans selection:bg-[#38BDF8]/30 overflow-x-hidden">
       {/* Sticky Header with Navigation */}
       <header className="sticky top-0 z-40 bg-black/80 backdrop-blur-2xl border-b border-white/[0.05] shrink-0">
-        <div className="w-full max-w-7xl mx-auto h-20 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4">
+        <div className="w-full max-w-[1536px] 2xl:max-w-[1680px] mx-auto h-20 px-4 sm:px-6 md:px-8 lg:px-10 flex items-center justify-between gap-4">
           {/* Brand Logo & Title */}
           <button
             type="button"
@@ -289,10 +301,7 @@ export default function App() {
                   : 'text-white/60 hover:text-white font-medium border border-transparent hover:bg-white/[0.03]'
               }`}
             >
-              <span>Slots</span>
-              <span className="text-[11px] font-mono tabular-nums text-[#7DD3FC]">
-                ({confirmedTeams.length}/{config.totalSlots})
-              </span>
+              <span>Team Slots</span>
             </button>
 
             <button
@@ -339,7 +348,7 @@ export default function App() {
               { key: 'home', label: 'Home' },
               { key: 'rules', label: 'Rules' },
               { key: 'commands', label: 'Commands' },
-              { key: 'slots', label: `Slots (${confirmedTeams.length}/${config.totalSlots})` },
+              { key: 'slots', label: 'Team Slots' },
               { key: 'gateway', label: 'Gateway' }
             ] as const
           ).map(tab => (
@@ -360,7 +369,7 @@ export default function App() {
       </header>
 
       {/* Main Page Content */}
-      <main className="flex-1 w-full max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-8 sm:py-10 pb-24">
+      <main className="flex-1 w-full max-w-[1536px] 2xl:max-w-[1680px] mx-auto px-4 sm:px-6 md:px-8 lg:px-10 py-8 sm:py-10 pb-24">
         {/* ============================================================ */}
         {/* 1. HOME PAGE */}
         {/* ============================================================ */}
@@ -368,8 +377,8 @@ export default function App() {
           <div className="space-y-12 animate-fadeIn">
             {/* Hero Section with Ambient Glow */}
             <section className="relative pt-6 pb-8 sm:pt-12 sm:pb-10 text-center">
-              <div className="pointer-events-none absolute -top-6 left-1/2 -translate-x-1/2 w-[880px] max-w-full h-[360px] rounded-full bg-gradient-to-b from-[#38BDF8]/15 via-[#0EA5E9]/8 to-transparent blur-[120px] -z-10" />
-              <div className="pointer-events-none absolute top-16 left-1/2 -translate-x-1/2 w-[480px] max-w-full h-[180px] rounded-full bg-[#BAE6FD]/8 blur-[80px] -z-10" />
+              <div className="pointer-events-none absolute -top-6 left-1/2 -translate-x-1/2 w-[1100px] max-w-full h-[360px] rounded-full bg-gradient-to-b from-[#38BDF8]/15 via-[#0EA5E9]/8 to-transparent blur-[120px] -z-10" />
+              <div className="pointer-events-none absolute top-16 left-1/2 -translate-x-1/2 w-[600px] max-w-full h-[180px] rounded-full bg-[#BAE6FD]/8 blur-[80px] -z-10" />
 
               <div className="inline-flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-[#0EA5E9]/[0.07] border border-[#38BDF8]/25 mb-6 shadow-[0_0_24px_rgba(56,189,248,0.1)]">
                 <Trophy className="w-3.5 h-3.5 text-[#7DD3FC]" />
@@ -378,11 +387,11 @@ export default function App() {
                 </span>
               </div>
 
-              <h1 className="font-display text-4xl sm:text-6xl lg:text-[4.5rem] font-black tracking-[-0.035em] leading-[1.08] pb-1.5 max-w-4xl mx-auto text-balance hero-gradient-text">
-                {config.title || 'Glacier Cup Manager'}
+              <h1 className="font-display text-4xl sm:text-6xl lg:text-[4.5rem] font-black tracking-[-0.035em] leading-[1.08] pb-1.5 max-w-5xl mx-auto text-balance hero-gradient-text">
+                TOURNAMENT MANAGER
               </h1>
 
-              <p className="mt-5 text-[15px] sm:text-base lg:text-[17px] text-white/65 max-w-2xl mx-auto leading-[1.7] font-normal">
+              <p className="mt-5 text-[15px] sm:text-base lg:text-[17px] text-white/65 max-w-3xl mx-auto leading-[1.7] font-normal">
                 Precision tag-basis squad verification, cross-team anti-duplicate protection, automated multi-group slot allocation, private team voice channels, and instant Room ID &amp; Password dispatch.
               </p>
 
@@ -393,10 +402,21 @@ export default function App() {
                     Active Format
                   </div>
                   <div className="font-display text-2xl sm:text-3xl font-extrabold text-white mt-2 flex items-baseline justify-center gap-2 tracking-tight">
-                    <span>{config.format}</span>
-                    <span className="text-xs font-mono text-[#7DD3FC] font-medium">
-                      ({config.requiredTags} Tags)
-                    </span>
+                    {config.totalSlots > 0 ? (
+                      <>
+                        <span>{config.format}</span>
+                        <span className="text-xs font-mono text-[#7DD3FC] font-medium">
+                          ({config.requiredTags} Tags)
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-white/40">None</span>
+                        <span className="text-xs font-mono text-white/35 font-medium">
+                          (0 Tags)
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -405,8 +425,11 @@ export default function App() {
                     Confirmed Slots
                   </div>
                   <div className="font-mono tabular-nums text-2xl sm:text-3xl font-extrabold text-[#7DD3FC] mt-2 tracking-tight">
-                    {confirmedTeams.length}
-                    <span className="text-white/30 font-normal text-xl sm:text-2xl"> / {config.totalSlots}</span>
+                    {config.totalSlots > 0 ? confirmedTeams.length : 0}
+                    <span className="text-white/30 font-normal text-xl sm:text-2xl">
+                      {' '}
+                      / {config.totalSlots > 0 ? config.totalSlots : 0}
+                    </span>
                   </div>
                 </div>
 
@@ -415,8 +438,11 @@ export default function App() {
                     Waitlist Queue
                   </div>
                   <div className="font-mono tabular-nums text-2xl sm:text-3xl font-extrabold text-white mt-2 tracking-tight">
-                    {waitlistTeams.length}
-                    <span className="text-white/30 font-normal text-xl sm:text-2xl"> / {config.waitlistSlots}</span>
+                    {config.totalSlots > 0 ? waitlistTeams.length : 0}
+                    <span className="text-white/30 font-normal text-xl sm:text-2xl">
+                      {' '}
+                      / {config.totalSlots > 0 ? config.waitlistSlots : 0}
+                    </span>
                   </div>
                 </div>
 
@@ -427,23 +453,19 @@ export default function App() {
                   <div className="font-mono text-base sm:text-lg font-bold uppercase mt-2.5 flex items-center justify-center gap-2.5">
                     <span
                       className={`w-2 h-2 rounded-full ${
-                        config.status === 'open'
+                        config.totalSlots > 0 && config.status === 'open'
                           ? 'bg-[#10B981] shadow-[0_0_10px_#10B981]'
-                          : config.status === 'paused'
-                          ? 'bg-[#F59E0B]'
                           : 'bg-[#EF4444]'
                       }`}
                     />
                     <span
                       className={
-                        config.status === 'open'
+                        config.totalSlots > 0 && config.status === 'open'
                           ? 'text-[#10B981]'
-                          : config.status === 'paused'
-                          ? 'text-[#F59E0B]'
                           : 'text-[#EF4444]'
                       }
                     >
-                      {config.status}
+                      {config.totalSlots > 0 && config.status === 'open' ? 'open' : 'closed'}
                     </span>
                   </div>
                 </div>
@@ -515,7 +537,7 @@ export default function App() {
                     Bot Commands
                   </h3>
                   <p className="text-xs text-white/55 leading-relaxed">
-                    Explore all 18 Discord slash (/) and prefix (!) commands with 1-click copyable syntax and examples.
+                    Explore all 16 Discord slash (/) and prefix (!) commands with 1-click copyable syntax and examples.
                   </p>
                 </div>
                 <div className="pt-4 flex items-center gap-1.5 text-xs text-[#10B981] font-semibold">
@@ -536,7 +558,7 @@ export default function App() {
                     Slots &amp; Rosters
                   </h3>
                   <p className="text-xs text-white/55 leading-relaxed">
-                    View live confirmed squads ({confirmedTeams.length}/{config.totalSlots}), waitlist queue, and export rosters to CSV.
+                    View live confirmed squads{config.totalSlots > 0 ? ` (${confirmedTeams.length}/${config.totalSlots})` : ' (up to 500 slots)'}, configure group partitions, swap slots, and export rosters to CSV.
                   </p>
                 </div>
                 <div className="pt-4 flex items-center gap-1.5 text-xs text-[#F59E0B] font-semibold">
@@ -589,31 +611,57 @@ export default function App() {
                   Rulebook &amp; Verification Parameters
                 </div>
                 <h2 className="font-display text-2xl sm:text-4xl font-extrabold text-white tracking-tight">
-                  Tournament Rules &amp; Configuration
+                  Tournament Rules &amp; Custom Embed Studio
                 </h2>
                 <p className="text-xs sm:text-sm text-white/55 max-w-2xl leading-relaxed">
-                  Set custom tournament rules for <code className="text-[#38BDF8] font-mono">#📋┃rules-format</code>, configure required squad tags, format presets, and anti-duplicate registration policies.
+                  Design rich, Discohook-style embeds with live preview to dispatch directly to <code className="text-[#38BDF8] font-mono">#tournament-rules</code> or configure engine validation parameters.
                 </p>
               </div>
 
               <div className="flex items-center gap-3 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => navigateTo('slots')}
-                  className="btn-glacier-secondary h-11 px-5 rounded-xl text-xs font-semibold flex items-center gap-2 cursor-pointer"
-                >
-                  <Users className="w-4 h-4 text-[#F59E0B]" />
-                  <span>View Slot Roster</span>
-                </button>
+                <div className="p-1 rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setRulesViewTab('embed')}
+                    className={`h-9 px-3.5 rounded-lg text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
+                      rulesViewTab === 'embed'
+                        ? 'bg-[#38BDF8] text-black shadow-[0_2px_12px_rgba(56,189,248,0.35)]'
+                        : 'text-white/60 hover:text-white hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    <span>Custom Embed Rules</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRulesViewTab('settings')}
+                    className={`h-9 px-3.5 rounded-lg text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
+                      rulesViewTab === 'settings'
+                        ? 'bg-white/15 text-white shadow-xs'
+                        : 'text-white/60 hover:text-white hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5" />
+                    <span>Engine Parameters</span>
+                  </button>
+                </div>
               </div>
             </div>
 
-            <TourneyConfigPanel
-              config={config}
-              onSaveConfig={handleUpdateConfig}
-              registeredTeams={registeredTeams}
-              onResetTeams={handleResetTeams}
-            />
+            {rulesViewTab === 'embed' ? (
+              <RulesEmbedStudio
+                config={config}
+                onRulesPublished={rulesText => {
+                  setConfig(prev => ({ ...prev, customRules: rulesText }));
+                }}
+              />
+            ) : (
+              <TourneyConfigPanel
+                config={config}
+                onSaveConfig={handleUpdateConfig}
+                registeredTeams={registeredTeams}
+                onResetTeams={handleResetTeams}
+              />
+            )}
           </div>
         )}
 
@@ -628,39 +676,15 @@ export default function App() {
         {/* 4. SLOTS PAGE */}
         {/* ============================================================ */}
         {currentPage === 'slots' && (
-          <div className="space-y-8 animate-fadeIn">
-            <div className="p-6 sm:p-8 rounded-[24px] esports-card flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative overflow-hidden">
-              <div className="pointer-events-none absolute -top-24 left-1/2 -translate-x-1/2 w-[600px] h-[200px] bg-[#38BDF8]/10 blur-[90px]" />
-              <div className="space-y-2 relative">
-                <div className="eyebrow-label">
-                  Slot Allocation &amp; Group Partitions
-                </div>
-                <h2 className="font-display text-2xl sm:text-4xl font-extrabold text-white tracking-tight">
-                  Confirmed Slots &amp; Waiting List
-                </h2>
-                <p className="text-xs sm:text-sm text-white/55 max-w-2xl leading-relaxed">
-                  Real-time registered squads table with group partitions (Group A, Group B, etc.), captain contact info, player tags, and instant waitlist auto-promotion.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-3 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setIsIdpModalOpen(true)}
-                  className="btn-glacier-primary h-11 px-5 rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer"
-                >
-                  <KeyRound className="w-4 h-4" />
-                  <span>Publish Room IDP</span>
-                </button>
-              </div>
-            </div>
-
+          <div className="space-y-6 animate-fadeIn motion-reduce:animate-none">
             <SlotRosterTable
               teams={registeredTeams}
               config={config}
               onKickTeam={handleKickTeam}
               onClearAll={handleResetTeams}
               onRefreshTeams={refreshTeams}
+              onUpdateConfig={handleUpdateConfig}
+              onOpenIdpModal={() => setIsIdpModalOpen(true)}
             />
           </div>
         )}
@@ -716,8 +740,8 @@ export default function App() {
       />
 
       {/* Footer */}
-      <footer className="mt-auto border-t border-white/[0.06] bg-black/80 backdrop-blur-md py-7 px-4 sm:px-6 lg:px-8">
-        <div className="w-full max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-white/45">
+      <footer className="mt-auto border-t border-white/[0.06] bg-black/80 backdrop-blur-md py-7 px-4 sm:px-6 md:px-8 lg:px-10">
+        <div className="w-full max-w-[1536px] 2xl:max-w-[1680px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-white/45">
           <div className="flex items-center gap-3">
             <img
               src="/assets/glacier-cup-logo.png"

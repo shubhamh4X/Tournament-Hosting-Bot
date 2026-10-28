@@ -12,6 +12,7 @@ export type TournamentRegion = 'India' | 'Pakistan' | 'Bangladesh';
 
 export interface TeamRegistration {
   id: string;
+  tournamentId?: string;
   slotNumber: number;
   teamName: string;
   captain: DiscordUser;
@@ -27,6 +28,7 @@ export interface TeamRegistration {
   teamCategoryName?: string;
   teamVoiceChannelId?: string;
   teamVoiceChannelName?: string;
+  teamVoiceInviteUrl?: string;
   whatsappNumber1?: string;
   whatsappNumber2?: string;
   region?: TournamentRegion;
@@ -34,6 +36,8 @@ export interface TeamRegistration {
 
 export interface TournamentConfig {
   id: string;
+  guildId?: string;
+  createdAt?: string;
   title: string;
   game: string;
   format: 'Squad' | 'Trio' | 'Duo' | 'Solo' | 'Custom';
@@ -43,6 +47,7 @@ export interface TournamentConfig {
   waitlistSlots: number;
   groupsCount: number;
   teamsPerGroup?: number;
+  categoryId?: string;
   categoryName: string;
   easyTagEnabled: boolean;
   prohibitDuplicateTags: boolean;
@@ -51,17 +56,26 @@ export interface TournamentConfig {
   autoDeleteInvalid: boolean;
   autoDeleteSeconds: number;
   autoCreateTeamVoice?: boolean;
-  status: 'open' | 'closed' | 'paused';
+  status: 'open' | 'closed';
+  regChannelId?: string;
   regChannel: string;
+  slotListChannelId?: string;
   slotListChannel: string;
+  idpChannelId?: string;
   idpChannel: string;
+  regDetailsChannelId?: string;
   regDetailsChannel?: string;
   rulesMessage: string;
+  slotRoleId?: string;
   roleName: string;
+  verifiedRoleId?: string;
   verifiedRoleName?: string;
+  managerRoleId?: string;
   managerRoleName?: string;
   customRules?: string;
+  rulesChannelId?: string;
   rulesChannel?: string;
+  tournaments?: Record<string, any>;
   blacklist?: BlacklistEntry[];
 }
 

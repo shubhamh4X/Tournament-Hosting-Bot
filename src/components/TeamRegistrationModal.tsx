@@ -38,8 +38,8 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
   const reqTags = Math.max(1, config.requiredTags || 4);
 
   const [teamName, setTeamName] = useState<string>('');
-  const [region, setRegion] = useState<TournamentRegion>('India');
-  const [whatsappNumber1, setWhatsappNumber1] = useState<string>('+91 ');
+  const [region, setRegion] = useState<TournamentRegion | ''>('');
+  const [whatsappNumber1, setWhatsappNumber1] = useState<string>('');
   const [playerTags, setPlayerTags] = useState<string[]>(
     Array.from({ length: reqTags }, () => '')
   );
@@ -57,8 +57,9 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleRegionChange = (nextRegion: TournamentRegion) => {
+  const handleRegionChange = (nextRegion: TournamentRegion | '') => {
     setRegion(nextRegion);
+    if (!nextRegion) return;
     const nextCode = getRegionCountryCode(nextRegion);
     setWhatsappNumber1(prev => {
       const stripped = prev
@@ -160,7 +161,7 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
     e.preventDefault();
     if (isSubmitting) return;
 
-    if (!validateForm()) {
+    if (!validateForm() || !region) {
       return;
     }
 
@@ -217,7 +218,7 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
     }
   };
 
-  const currentCode = getRegionCountryCode(region);
+  const currentCode = region ? getRegionCountryCode(region) : '';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/85 backdrop-blur-xl overflow-y-auto">
@@ -291,17 +292,22 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
                 <span>Region</span>
                 <span className="text-[#F87171]">*</span>
               </span>
-              <span className="text-[11px] text-white/45 font-mono">
-                Auto-sets {currentCode} country code
-              </span>
+              {currentCode && (
+                <span className="text-[11px] text-white/45 font-mono">
+                  Auto-sets {currentCode} country code
+                </span>
+              )}
             </label>
             <select
               value={region}
-              onChange={e => handleRegionChange(e.target.value as TournamentRegion)}
+              onChange={e => handleRegionChange(e.target.value as TournamentRegion | '')}
               disabled={isSubmitting}
               className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-medium cursor-pointer"
               required
             >
+              <option value="" disabled className="bg-[#090C12] text-white/50">
+                Select Region...
+              </option>
               {VALID_TOURNAMENT_REGIONS.map(reg => (
                 <option key={reg} value={reg} className="bg-[#090C12] text-white">
                   {reg === 'India' ? '🇮🇳 India (+91)' : reg === 'Bangladesh' ? '🇧🇩 Bangladesh (+880)' : '🇵🇰 Pakistan (+92)'}
@@ -317,15 +323,17 @@ export const TeamRegistrationModal: React.FC<TeamRegistrationModalProps> = ({
                 <span>Captain WhatsApp Number</span>
                 <span className="text-[#F87171]">*</span>
               </span>
-              <span className="text-[11px] text-white/45 font-mono">
-                Must start with {currentCode}
-              </span>
+              {currentCode && (
+                <span className="text-[11px] text-white/45 font-mono">
+                  Must start with {currentCode}
+                </span>
+              )}
             </label>
             <input
               type="tel"
               value={whatsappNumber1}
               onChange={e => setWhatsappNumber1(e.target.value)}
-              placeholder={`${currentCode} XXXXXXXXXX`}
+              placeholder={currentCode ? `${currentCode} XXXXXXXXXX` : 'Enter WhatsApp number with country code'}
               disabled={isSubmitting}
               className="w-full h-11 px-3.5 rounded-xl esports-input font-mono text-xs placeholder-white/35"
               required

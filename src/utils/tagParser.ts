@@ -302,14 +302,6 @@ export function validateRegistration(
     };
   }
 
-  if (config.status === 'paused') {
-    return {
-      valid: false,
-      code: 'REGISTRATION_PAUSED',
-      error: 'Registrations are temporarily paused by staff. Try again shortly.'
-    };
-  }
-
   const cleanTeam = (teamName || '').replace(/^<\s*|\s*>$/g, '').trim();
   const lowerTeam = cleanTeam.toLowerCase();
   const reservedNames = new Set([
@@ -657,9 +649,7 @@ export function buildSlotListEmbed(
       ? isFull
         ? '🔴 FULL (Waitlist Open)'
         : '🟢 REGISTRATIONS OPEN'
-      : config.status === 'paused'
-      ? '⏸️ PAUSED'
-      : '🔒 CLOSED (Run /start-registration to open)';
+      : '🔒 CLOSED';
 
   return {
     title: `🏆 ${config.title} — Official Slot List`,

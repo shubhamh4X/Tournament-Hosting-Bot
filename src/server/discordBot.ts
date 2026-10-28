@@ -81,6 +81,17 @@ export interface BotStatus {
 
 const DISCORD_EPOCH = 1420070400000n;
 
+const EMOJI = {
+  done: '<a:done:1470353529049845946>',
+  alert: '<a:alertcircle:1470353569310965762>',
+  divider: '<a:divider1:1469614109946282057>',
+  dividerBar: '<a:divider1:1469614109946282057>'.repeat(8),
+  giveaway: '<a:giveaway1:1477135683549265931>',
+  golden: '<:golden4:1503940741108596837>',
+  sword: '<:swordyellow:1503941574370001036>',
+  admin: '<:rnx_admin_3:1503210259114889286>'
+} as const;
+
 export function isValidDiscordSnowflake(id: string): boolean {
   if (!/^\d{17,20}$/.test(id)) return false;
   try {
@@ -133,10 +144,10 @@ class DiscordBotManager {
   public getRegisteredTeams?: () => any[];
 
   private blacklist: { userId: string; username: string; reason: string; addedBy: string; addedAt: string }[] = [];
-  private pendingRulesPrompts = new Map<string, { guildId: string; channelId: string; expiresAt: number }>();
+  private pendingRulesPrompts = new Map<string, { guildId: string; channelId: string; tournamentId?: string; expiresAt: number }>();
   private pendingRegistrationDrafts = new Map<
     string,
-    { region: 'India' | 'Bangladesh' | 'Pakistan'; regionSelected: boolean; playerIds: string[]; updatedAt: number }
+    { region: 'India' | 'Bangladesh' | 'Pakistan'; regionSelected: boolean; playerIds: string[]; tournamentId?: string; updatedAt: number }
   >();
   private operationQueue: Promise<any> = Promise.resolve();
   private inFlightPlayerIds = new Set<string>();
@@ -146,10 +157,832 @@ class DiscordBotManager {
   private cleanupTimers = new Set<NodeJS.Timeout>();
   private missingManageMessagesLogged = new Set<string>();
 
+  public getPersistedBotData() {
+    return {
+      blacklist: this.blacklist,
+      slotListMessageIds: Object.fromEntries(this.slotListMessageIds),
+      regDetailsMessageIds: Object.fromEntries(this.regDetailsMessageIds)
+    };
+  }
+
+  public restorePersistedBotData(data: any) {
+    if (!data || typeof data !== 'object') return;
+    if (Array.isArray(data.blacklist)) {
+      this.blacklist = data.blacklist;
+    }
+    if (data.slotListMessageIds && typeof data.slotListMessageIds === 'object') {
+      this.slotListMessageIds = new Map(
+        Object.entries(data.slotListMessageIds).filter(([, v]) => Array.isArray(v)) as [string, string[]][]
+      );
+    }
+    if (data.regDetailsMessageIds && typeof data.regDetailsMessageIds === 'object') {
+      this.regDetailsMessageIds = new Map(
+        Object.entries(data.regDetailsMessageIds).filter(([, v]) => Array.isArray(v)) as [string, string[]][]
+      );
+    }
+  }
+
   public async withOperationLock<T>(task: () => Promise<T> | T): Promise<T> {
     const next = this.operationQueue.then(() => task());
     this.operationQueue = next.catch(() => {});
     return next;
+  }
+
+  private ensureGuildChannelMap(config: any, guildId: string) {
+    if (!config) return null;
+    if (!config.guildChannels || typeof config.guildChannels !== 'object') {
+      config.guildChannels = {};
+    }
+    if (!config.guildChannels[guildId] || typeof config.guildChannels[guildId] !== 'object') {
+      config.guildChannels[guildId] = {};
+    }
+    return config.guildChannels[guildId];
+  }
+
+  public ensureTournamentsRegistry(rootConfig?: any): Record<string, any> {
+    const cfg = rootConfig || (this.getTournamentConfig ? this.getTournamentConfig() : null);
+    if (!cfg) return {};
+    if (!cfg.tournaments || typeof cfg.tournaments !== 'object') {
+      cfg.tournaments = {};
+    }
+    if (
+      Object.keys(cfg.tournaments).length === 0 &&
+      (cfg.categoryId || cfg.regChannelId || cfg.slotListChannelId || (cfg.totalSlots && cfg.totalSlots > 0))
+    ) {
+      const initialId = cfg.id || 'tourney-initial';
+      cfg.id = initialId;
+      const snapshot = { ...cfg };
+      delete snapshot.tournaments;
+      cfg.tournaments[initialId] = snapshot;
+
+      const allTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+      for (const t of allTeams) {
+        if (!t.tournamentId) {
+          t.tournamentId = initialId;
+        }
+      }
+    }
+    return cfg.tournaments;
+  }
+
+  public getGuildTournaments(guildOrId?: Guild | string | null): any[] {
+    const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    if (!rootConfig) return [];
+    const registry = this.ensureTournamentsRegistry(rootConfig);
+    const all = Object.values(registry);
+    if (!guildOrId) return all;
+    const guildId = typeof guildOrId === 'string' ? guildOrId : guildOrId.id;
+    const guildObj =
+      typeof guildOrId === 'string'
+        ? this.client?.guilds?.cache?.get(guildOrId)
+        : guildOrId;
+    return all.filter(
+      (t: any) =>
+        (guildId && t.guildId === guildId) ||
+        (guildObj?.channels?.cache && t.categoryId && guildObj.channels.cache.has(t.categoryId)) ||
+        (guildObj?.channels?.cache && t.regChannelId && guildObj.channels.cache.has(t.regChannelId))
+    );
+  }
+
+  public syncTournamentToRootConfig(tConfig: any, makeActiveOnRoot: boolean = false) {
+    if (!tConfig || !tConfig.id) return;
+    const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    if (!rootConfig) return;
+    const registry = this.ensureTournamentsRegistry(rootConfig);
+    const copy = { ...tConfig };
+    delete copy.tournaments;
+    registry[tConfig.id] = copy;
+
+    if (makeActiveOnRoot || rootConfig.id === tConfig.id || !rootConfig.id) {
+      const fieldsToSync = [
+        'id',
+        'guildId',
+        'createdAt',
+        'title',
+        'totalSlots',
+        'requiredTags',
+        'maxTags',
+        'teamsPerGroup',
+        'groupsCount',
+        'format',
+        'status',
+        'explicitlyStoppedOrPaused',
+        'categoryId',
+        'categoryName',
+        'rulesChannelId',
+        'rulesChannel',
+        'regChannelId',
+        'regChannel',
+        'slotListChannelId',
+        'slotListChannel',
+        'idpChannelId',
+        'idpChannel',
+        'regDetailsChannelId',
+        'regDetailsChannel',
+        'managerRoleId',
+        'managerRoleName',
+        'verifiedRoleId',
+        'verifiedRoleName',
+        'slotRoleId',
+        'roleName',
+        'customRules'
+      ];
+      for (const f of fieldsToSync) {
+        if (copy[f] !== undefined) {
+          rootConfig[f] = copy[f];
+        }
+      }
+    }
+  }
+
+  public reconcileActiveTournaments(): boolean {
+    const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    if (!rootConfig) return false;
+    const registry = this.ensureTournamentsRegistry(rootConfig);
+    const isBotReady = Boolean(this.client && this.client.isReady());
+    let modified = false;
+
+    if (isBotReady && this.client) {
+      for (const [tid, t] of Object.entries(registry)) {
+        if (!t) {
+          delete registry[tid];
+          modified = true;
+          continue;
+        }
+        const guild = t.guildId
+          ? this.client.guilds.cache.get(t.guildId)
+          : Array.from(this.client.guilds.cache.values())[0];
+        if (guild) {
+          const hasAnyTrackedChannel = Boolean(
+            (t.categoryId && guild.channels.cache.has(t.categoryId)) ||
+              (t.regChannelId && guild.channels.cache.has(t.regChannelId)) ||
+              (t.slotListChannelId && guild.channels.cache.has(t.slotListChannelId)) ||
+              (t.rulesChannelId && guild.channels.cache.has(t.rulesChannelId)) ||
+              (t.idpChannelId && guild.channels.cache.has(t.idpChannelId))
+          );
+          if (!hasAnyTrackedChannel) {
+            delete registry[tid];
+            modified = true;
+          }
+        }
+      }
+    }
+
+    const remainingTourneys = (Object.values(registry) as any[]).sort((a, b) =>
+      String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+    );
+
+    if (remainingTourneys.length > 0) {
+      const currentActiveExists = rootConfig.id && registry[rootConfig.id];
+      if (!currentActiveExists) {
+        this.syncTournamentToRootConfig(remainingTourneys[0], true);
+        modified = true;
+      }
+      if (modified && this.onConfigUpdated) {
+        this.onConfigUpdated();
+      }
+      return true;
+    }
+
+    let hasLiveLegacyChannel = false;
+    if (isBotReady && this.client) {
+      for (const [, g] of this.client.guilds.cache) {
+        if (
+          (rootConfig.categoryId && g.channels.cache.has(rootConfig.categoryId)) ||
+          (rootConfig.regChannelId && g.channels.cache.has(rootConfig.regChannelId)) ||
+          (rootConfig.slotListChannelId && g.channels.cache.has(rootConfig.slotListChannelId))
+        ) {
+          hasLiveLegacyChannel = true;
+          break;
+        }
+      }
+    }
+
+    if (!hasLiveLegacyChannel && (isBotReady || (!rootConfig.id && !rootConfig.categoryId && !rootConfig.regChannelId))) {
+      if (
+        rootConfig.id !== '' ||
+        rootConfig.totalSlots !== 0 ||
+        rootConfig.status !== 'closed' ||
+        !rootConfig.explicitlyStoppedOrPaused
+      ) {
+        rootConfig.id = '';
+        rootConfig.totalSlots = 0;
+        rootConfig.teamsPerGroup = 0;
+        rootConfig.groupsCount = 0;
+        rootConfig.status = 'closed';
+        rootConfig.explicitlyStoppedOrPaused = true;
+        rootConfig.categoryName = '';
+        rootConfig.categoryId = '';
+        rootConfig.rulesChannelId = '';
+        rootConfig.regChannelId = '';
+        rootConfig.slotListChannelId = '';
+        rootConfig.idpChannelId = '';
+        rootConfig.regDetailsChannelId = '';
+        rootConfig.verifiedRoleId = '';
+        rootConfig.slotRoleId = '';
+        rootConfig.guildChannels = {};
+        const allTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+        if (allTeams.length > 0) {
+          allTeams.splice(0, allTeams.length);
+        }
+        modified = true;
+      }
+    }
+
+    if (modified && this.onConfigUpdated) {
+      this.onConfigUpdated();
+    }
+    return hasLiveLegacyChannel;
+  }
+
+  public resolveTournamentContext(
+    guild?: Guild | null,
+    channelId?: string | null,
+    explicitTournamentId?: string | null
+  ): any {
+    const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    if (!rootConfig) return null;
+    const registry = this.ensureTournamentsRegistry(rootConfig);
+    const list = Object.values(registry);
+
+    if (explicitTournamentId && explicitTournamentId !== 'default' && registry[explicitTournamentId]) {
+      return registry[explicitTournamentId];
+    }
+
+    if (channelId) {
+      const byDirectChannel = list.find(
+        (t: any) =>
+          t.regChannelId === channelId ||
+          t.slotListChannelId === channelId ||
+          t.rulesChannelId === channelId ||
+          t.idpChannelId === channelId ||
+          t.regDetailsChannelId === channelId ||
+          t.categoryId === channelId
+      );
+      if (byDirectChannel) {
+        return byDirectChannel;
+      }
+
+      if (guild) {
+        const ch = guild.channels.cache.get(channelId) as any;
+        if (ch?.parentId) {
+          const byCategory = list.find((t: any) => t.categoryId && t.categoryId === ch.parentId);
+          if (byCategory) {
+            return byCategory;
+          }
+        }
+      }
+    }
+
+    if (guild) {
+      const guildTourneys = this.getGuildTournaments(guild);
+      if (guildTourneys.length > 0) {
+        if (rootConfig.id) {
+          const activeInGuild = guildTourneys.find((t: any) => t.id === rootConfig.id);
+          if (activeInGuild) return activeInGuild;
+        }
+        return guildTourneys[guildTourneys.length - 1];
+      }
+    }
+
+    if (rootConfig.id && registry[rootConfig.id]) {
+      return registry[rootConfig.id];
+    }
+
+    return rootConfig;
+  }
+
+  public getTeamsForTournament(tConfig?: any): any[] {
+    const allTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+    for (let i = allTeams.length - 1; i >= 0; i--) {
+      const cleanedExisting = (allTeams[i].teamName || '').replace(/^<\s*|\s*>$/g, '').trim().toLowerCase();
+      if (cleanedExisting === 'team name' || cleanedExisting === 'your team' || cleanedExisting === 'your team name') {
+        allTeams.splice(i, 1);
+      }
+    }
+    if (!tConfig || !tConfig.id) {
+      return allTeams;
+    }
+    const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    const registry = rootConfig ? this.ensureTournamentsRegistry(rootConfig) : {};
+    const tourneyCount = Object.keys(registry).length;
+
+    return allTeams.filter((t: any) => {
+      if (t.tournamentId) {
+        return t.tournamentId === tConfig.id;
+      }
+      if (tConfig.regChannelId && t.channelId === tConfig.regChannelId) {
+        return true;
+      }
+      return tourneyCount <= 1;
+    });
+  }
+
+  public resolveTournamentCategory(guild: Guild | undefined | null, config: any): CategoryChannel | undefined {
+    if (!guild) return undefined;
+    const guildMap = config?.guildChannels?.[guild.id];
+    const targetId = config?.categoryId || guildMap?.categoryId;
+    if (targetId) {
+      const byId = guild.channels.cache.get(targetId);
+      if (byId && byId.type === ChannelType.GuildCategory) {
+        if (config && config.categoryName !== byId.name) {
+          config.categoryName = byId.name;
+        }
+        return byId as CategoryChannel;
+      }
+    }
+
+    const cfgCatName = (config?.categoryName || '').replace(/^🏆\s*┃?\s*/i, '').trim().toLowerCase();
+    const cfgTitle = (config?.title || '').trim().toLowerCase();
+    const found = guild.channels.cache.find(
+      c =>
+        c.type === ChannelType.GuildCategory &&
+        ((cfgCatName &&
+          (c.name.trim().toLowerCase() === cfgCatName ||
+            c.name.replace(/^🏆\s*┃?\s*/i, '').trim().toLowerCase() === cfgCatName)) ||
+          (cfgTitle &&
+            (c.name.trim().toLowerCase() === cfgTitle ||
+              c.name.replace(/^🏆\s*┃?\s*/i, '').trim().toLowerCase() === cfgTitle)))
+    ) as CategoryChannel | undefined;
+
+    if (found && config) {
+      config.categoryId = found.id;
+      config.categoryName = found.name;
+    }
+    return found;
+  }
+
+  public resolveRulesChannel(guild: Guild | undefined | null, config: any): TextChannel | undefined {
+    if (!guild) return undefined;
+    const guildMap = config?.guildChannels?.[guild.id];
+    const targetId = config?.rulesChannelId || guildMap?.rulesChannelId;
+    if (targetId) {
+      const byId = guild.channels.cache.get(targetId);
+      if (byId && byId.isTextBased()) {
+        if (config && config.rulesChannel !== byId.name) {
+          config.rulesChannel = byId.name;
+        }
+        return byId as TextChannel;
+      }
+    }
+
+    const candidates = new Set(
+      [
+        config?.rulesChannel,
+        'tournament-rules',
+        'rules-format',
+        '📋┃rules-format',
+        'rules'
+      ]
+        .filter(Boolean)
+        .map((n: string) => n.toLowerCase().replace(/^#/, ''))
+    );
+
+    const found = guild.channels.cache.find(
+      c =>
+        c.isTextBased() &&
+        (!config?.categoryId || c.parentId === config.categoryId) &&
+        (c.id === config?.rulesChannel || candidates.has(c.name.toLowerCase()))
+    ) as TextChannel | undefined;
+
+    if (found && config) {
+      config.rulesChannelId = found.id;
+      config.rulesChannel = found.name;
+    }
+    return found;
+  }
+
+  public resolveRegistrationChannel(guild: Guild | undefined | null, config: any): TextChannel | undefined {
+    if (!guild) return undefined;
+    const guildMap = config?.guildChannels?.[guild.id];
+    const targetId = config?.regChannelId || guildMap?.regChannelId;
+    if (targetId) {
+      const byId = guild.channels.cache.get(targetId);
+      if (byId && byId.isTextBased()) {
+        if (config && config.regChannel !== byId.name) {
+          config.regChannel = byId.name;
+        }
+        return byId as TextChannel;
+      }
+    }
+
+    const candidates = new Set(
+      [
+        config?.regChannel,
+        'tournament-registration',
+        'registration',
+        '📝┃registration'
+      ]
+        .filter(Boolean)
+        .map((n: string) => n.toLowerCase().replace(/^#/, ''))
+    );
+
+    const found = guild.channels.cache.find(
+      c =>
+        c.isTextBased() &&
+        (!config?.categoryId || c.parentId === config.categoryId) &&
+        (c.id === config?.regChannel || candidates.has(c.name.toLowerCase()))
+    ) as TextChannel | undefined;
+
+    if (found && config) {
+      config.regChannelId = found.id;
+      config.regChannel = found.name;
+    }
+    return found;
+  }
+
+  public resolveSlotListChannel(guild: Guild | undefined | null, config: any): TextChannel | undefined {
+    if (!guild) return undefined;
+    const guildMap = config?.guildChannels?.[guild.id];
+    const targetId = config?.slotListChannelId || guildMap?.slotListChannelId;
+    if (targetId) {
+      const byId = guild.channels.cache.get(targetId);
+      if (byId && byId.isTextBased()) {
+        if (config && config.slotListChannel !== byId.name) {
+          config.slotListChannel = byId.name;
+        }
+        return byId as TextChannel;
+      }
+    }
+
+    const candidates = new Set(
+      [
+        config?.slotListChannel,
+        'slot-list',
+        '📊┃slot-list'
+      ]
+        .filter(Boolean)
+        .map((n: string) => n.toLowerCase().replace(/^#/, ''))
+    );
+
+    const found = guild.channels.cache.find(
+      c =>
+        c.isTextBased() &&
+        (!config?.categoryId || c.parentId === config.categoryId) &&
+        (c.id === config?.slotListChannel || candidates.has(c.name.toLowerCase()))
+    ) as TextChannel | undefined;
+
+    if (found && config) {
+      config.slotListChannelId = found.id;
+      config.slotListChannel = found.name;
+    }
+    return found;
+  }
+
+  public resolveRegDetailsChannel(guild: Guild | undefined | null, config: any): TextChannel | undefined {
+    if (!guild) return undefined;
+    const guildMap = config?.guildChannels?.[guild.id];
+    const targetId = config?.regDetailsChannelId || guildMap?.regDetailsChannelId;
+    if (targetId) {
+      const byId = guild.channels.cache.get(targetId);
+      if (byId && byId.isTextBased()) {
+        if (config && config.regDetailsChannel !== byId.name) {
+          config.regDetailsChannel = byId.name;
+        }
+        return byId as TextChannel;
+      }
+    }
+
+    const candidates = new Set(
+      [
+        config?.regDetailsChannel,
+        'registration-details',
+        '🔒┃registration-details',
+        '📋┃registration-details'
+      ]
+        .filter(Boolean)
+        .map((n: string) => n.toLowerCase().replace(/^#/, ''))
+    );
+
+    const found = guild.channels.cache.find(
+      c =>
+        c.isTextBased() &&
+        (!config?.categoryId || c.parentId === config.categoryId) &&
+        (c.id === config?.regDetailsChannel || candidates.has(c.name.toLowerCase()))
+    ) as TextChannel | undefined;
+
+    if (found && config) {
+      config.regDetailsChannelId = found.id;
+      config.regDetailsChannel = found.name;
+    }
+    return found;
+  }
+
+  public resolveIdpChannel(guild: Guild | undefined | null, config: any): TextChannel | undefined {
+    if (!guild) return undefined;
+    const guildMap = config?.guildChannels?.[guild.id];
+    const targetId = config?.idpChannelId || guildMap?.idpChannelId;
+    if (targetId) {
+      const byId = guild.channels.cache.get(targetId);
+      if (byId && byId.isTextBased()) {
+        if (config && config.idpChannel !== byId.name) {
+          config.idpChannel = byId.name;
+        }
+        return byId as TextChannel;
+      }
+    }
+
+    const candidates = new Set(
+      [
+        config?.idpChannel,
+        'tournament-idp',
+        'id-pass',
+        '🔑┃id-pass'
+      ]
+        .filter(Boolean)
+        .map((n: string) => n.toLowerCase().replace(/^#/, ''))
+    );
+
+    const found = guild.channels.cache.find(
+      c =>
+        c.isTextBased() &&
+        (!config?.categoryId || c.parentId === config.categoryId) &&
+        (c.id === config?.idpChannel || candidates.has(c.name.toLowerCase()))
+    ) as TextChannel | undefined;
+
+    if (found && config) {
+      config.idpChannelId = found.id;
+      config.idpChannel = found.name;
+    }
+    return found;
+  }
+
+  public findUserTeamInTournament(userId: string, config: any) {
+    const normId = this.normalizeMemberId(userId);
+    if (!normId) return null;
+    const teams = this.getTeamsForTournament(config);
+    return (
+      teams.find(t => this.normalizeMemberId(t.captain?.id) === normId) ||
+      teams.find(t => this.getTeamMemberIds(t).has(normId)) ||
+      null
+    );
+  }
+
+  public createCaptainControlsRow(team: any, config: any) {
+    const tId = config?.id || team?.tournamentId || '';
+    return new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`captain_edit_roster:${team.id}:${tId}`)
+        .setLabel('✏️ Edit Roster')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`captain_cancel_slot:${team.id}:${tId}`)
+        .setLabel('🗑️ Cancel My Slot')
+        .setStyle(ButtonStyle.Danger)
+    );
+  }
+
+  public createCaptainEditRosterModal(team: any, config: any) {
+    const tags = Math.max(1, Math.min(10, config?.requiredTags || team?.players?.length || 4));
+    const tId = config?.id || team?.tournamentId || '';
+    const modal = new ModalBuilder()
+      .setCustomId(`submit_captain_edit_roster:${team.id}:${tId}`)
+      .setTitle(`✏️ Edit Roster — ${team.teamName}`.slice(0, 45));
+
+    const teamNameLabel = new LabelBuilder()
+      .setLabel('1. Team Name:')
+      .setDescription('Keep or update your squad name')
+      .setTextInputComponent(
+        new TextInputBuilder()
+          .setCustomId('edit_team_name')
+          .setStyle(TextInputStyle.Short)
+          .setValue(String(team.teamName || '').slice(0, 60))
+          .setMinLength(2)
+          .setMaxLength(60)
+          .setRequired(true)
+      );
+
+    const playersSelect = new UserSelectMenuBuilder()
+      .setCustomId('edit_player_tags')
+      .setPlaceholder(`Select ${tags} player${tags > 1 ? 's' : ''} for your roster`.slice(0, 150))
+      .setMinValues(tags)
+      .setMaxValues(tags)
+      .setRequired(true);
+
+    const existingPlayerIds = Array.isArray(team.players)
+      ? team.players
+          .map((p: any) => this.normalizeMemberId(p?.id))
+          .filter((id: string) => isValidDiscordSnowflake(id))
+          .slice(0, tags)
+      : [];
+
+    if (existingPlayerIds.length > 0) {
+      playersSelect.setDefaultUsers(...existingPlayerIds);
+    }
+
+    const playersLabel = new LabelBuilder()
+      .setLabel(`2. Updated Roster (${tags} Players):`.slice(0, 45))
+      .setDescription(`Select the ${tags} players for your updated squad roster`.slice(0, 100))
+      .setUserSelectMenuComponent(playersSelect);
+
+    modal.addLabelComponents(teamNameLabel, playersLabel);
+    return modal;
+  }
+
+  public async buildMyTeamPayload(guild: Guild | null | undefined, userId: string, config: any) {
+    const team = this.findUserTeamInTournament(userId, config);
+    if (!team) {
+      const notFoundEmbed = new EmbedBuilder()
+        .setTitle(`${EMOJI.alert} No Registered Team Found`)
+        .setColor(0xED4245)
+        .setDescription(
+          `${EMOJI.dividerBar}\n` +
+          `You (<@${userId}>) are not currently registered on any team in **${config?.title || 'this tournament'}**.\n` +
+          `Head over to \`#${config?.regChannel || 'tournament-registration'}\` to register your squad!\n` +
+          `${EMOJI.dividerBar}`
+        )
+        .setTimestamp();
+      return { embeds: [notFoundEmbed], components: [] };
+    }
+
+    const isCaptain = this.normalizeMemberId(team.captain?.id) === this.normalizeMemberId(userId);
+    const isRegOpen = config?.status === 'open' && !config?.explicitlyStoppedOrPaused;
+
+    const embed = new EmbedBuilder()
+      .setTitle(`${EMOJI.golden} My Team Dashboard — ${team.teamName}`)
+      .setColor(team.isWaitlist ? 0xFEE75C : 0x57F287)
+      .setDescription(
+        `${EMOJI.dividerBar}\n` +
+        (isCaptain
+          ? `${EMOJI.done} You are the **Team Captain** of **${team.teamName}**.\n` +
+            (isRegOpen
+              ? `Use the buttons below to **Edit Roster** (replace player tags) or **Cancel My Slot** while registration is open.`
+              : `🔒 Registration is currently locked — self-service roster edits and slot cancellation are closed.`)
+          : `You are a registered roster member of **${team.teamName}** (Captain: <@${team.captain.id}>). Only the Team Captain can edit the roster or cancel the slot.`) +
+        `\n${EMOJI.dividerBar}`
+      )
+      .addFields(
+        {
+          name: `${EMOJI.golden} Slot Allocation`,
+          value: team.isWaitlist ? `\`Waitlist #${team.slotNumber}\`` : `\`Slot #${team.slotNumber}\` (${team.group || 'Group A'})`,
+          inline: true
+        },
+        { name: `${EMOJI.admin} Team Captain`, value: `<@${team.captain.id}>`, inline: true },
+        { name: `${EMOJI.sword} Region`, value: `\`${team.region || 'India'}\``, inline: true },
+        {
+          name: `${EMOJI.done} Verified Roster (${(team.players || []).length} Players)`,
+          value: (team.players || []).map((p: any, idx: number) => `${EMOJI.sword} \`${idx + 1}.\` <@${p.id}> (\`${p.displayName || p.username}\`)`).join('\n') || 'None',
+          inline: false
+        },
+        {
+          name: `${EMOJI.golden} Team Voice Channel & Role`,
+          value: `${team.teamVoiceChannelId ? `🔊 <#${team.teamVoiceChannelId}>` : `\`${team.teamVoiceChannelName || team.teamName}\``} • ${team.teamRoleId ? `<@&${team.teamRoleId}>` : `\`@${team.teamRoleName || team.teamName}\``}`,
+          inline: false
+        }
+      )
+      .setFooter({ text: `Team ID: ${team.id} • FFA | Glacier Cup Manager™` })
+      .setTimestamp();
+
+    const components: ActionRowBuilder<ButtonBuilder>[] = [];
+    if (isCaptain && isRegOpen) {
+      components.push(this.createCaptainControlsRow(team, config));
+    }
+    if (guild && team.teamVoiceChannelId) {
+      const voiceUrl = await this.resolveVoiceConnectUrl(guild, team.teamVoiceChannelId, team.teamVoiceInviteUrl);
+      components.push(
+        this.createVoiceConnectButtonRow(guild.id, team.teamVoiceChannelId, team.teamVoiceChannelName || team.teamName, voiceUrl)
+      );
+    }
+
+    return { embeds: [embed], components };
+  }
+
+  public async handleCaptainEditRosterModal(interaction: ModalSubmitInteraction, team: any, config: any) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const isStaff = this.hasBotManagerRole(interaction.member, interaction.guild, false);
+    const isCaptain = this.normalizeMemberId(team.captain?.id) === this.normalizeMemberId(interaction.user.id);
+    if (!isCaptain && !isStaff) {
+      await interaction.editReply('❌ Only the registered **Team Captain** (or tournament staff) can edit this team\'s roster.');
+      return;
+    }
+
+    const isRegOpen = config?.status === 'open' && !config?.explicitlyStoppedOrPaused;
+    if (!isRegOpen && !isStaff) {
+      await interaction.editReply('🔒 **Registration is closed.** Roster changes are locked after registration closes.');
+      return;
+    }
+
+    const updatedTeamName = (interaction.fields.getTextInputValue('edit_team_name') || team.teamName || '').trim();
+    const rawPlayersField = (interaction.fields as any).fields?.get?.('edit_player_tags');
+    let selectedModalUsers: any = null;
+    let selectedModalMembers: any = null;
+    const taggedUserIds: string[] = [];
+
+    if (rawPlayersField && Array.isArray(rawPlayersField.values)) {
+      try {
+        selectedModalUsers = interaction.fields.getSelectedUsers('edit_player_tags');
+        selectedModalMembers = interaction.fields.getSelectedMembers('edit_player_tags');
+      } catch {
+        selectedModalUsers = rawPlayersField.users || null;
+        selectedModalMembers = rawPlayersField.members || null;
+      }
+      for (const uid of rawPlayersField.values) {
+        if (uid && isValidDiscordSnowflake(uid) && !taggedUserIds.includes(uid)) {
+          taggedUserIds.push(uid);
+        }
+      }
+    }
+
+    const playersList: any[] = [];
+    for (const uid of taggedUserIds) {
+      const modalUser = selectedModalUsers?.get?.(uid);
+      const modalMember = selectedModalMembers?.get?.(uid);
+      const cachedUser =
+        modalUser ||
+        interaction.guild?.members?.cache?.get(uid)?.user ||
+        this.client?.users?.cache?.get(uid);
+      const fetchedMember =
+        modalMember ||
+        (!cachedUser && interaction.guild
+          ? await interaction.guild.members.fetch(uid).catch(() => null)
+          : null);
+      const u =
+        cachedUser ||
+        fetchedMember?.user ||
+        (await this.client?.users.fetch(uid).catch(() => null));
+
+      if (u) {
+        if (config?.disallowBots && u.bot) {
+          await interaction.editReply(`❌ **Tagcheck Notice:** Bot <@${u.id}> cannot be registered as a tournament player.`);
+          return;
+        }
+        playersList.push({
+          id: uid,
+          username: u.username,
+          displayName: fetchedMember?.displayName || fetchedMember?.nick || u.displayName || u.username,
+          avatar: (typeof u.displayAvatarURL === 'function' ? u.displayAvatarURL() : null) || `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`,
+          isBot: Boolean(u.bot)
+        });
+      } else {
+        playersList.push({
+          id: uid,
+          username: `user_${uid.slice(-4)}`,
+          displayName: `Player ${uid.slice(-4)}`,
+          avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`,
+          isBot: false
+        });
+      }
+    }
+
+    const otherTeams = this.getTeamsForTournament(config).filter(t => t.id !== team.id);
+    const validation = this.validateTeamRegistrationRoster({
+      teamName: updatedTeamName,
+      captainId: team.captain.id,
+      players: playersList,
+      config,
+      existingTeams: otherTeams
+    });
+
+    if (!validation.valid) {
+      await interaction.editReply(`❌ **${validation.error || 'Roster validation failed.'}**`);
+      return;
+    }
+
+    const previousMemberIds = this.getTeamMemberIds(team);
+    team.teamName = updatedTeamName;
+    team.players = playersList.map(({ isBot, ...rest }) => rest);
+
+    if (interaction.guild) {
+      const newMemberIds = this.getTeamMemberIds(team);
+      const removedIds = Array.from(previousMemberIds).filter(id => !newMemberIds.has(id));
+      if (removedIds.length > 0) {
+        const verifiedRole = config?.verifiedRoleId ? interaction.guild.roles.cache.get(config.verifiedRoleId) : undefined;
+        const slotRole = config?.slotRoleId ? interaction.guild.roles.cache.get(config.slotRoleId) : undefined;
+        const teamRole = team.teamRoleId ? interaction.guild.roles.cache.get(team.teamRoleId) : undefined;
+        const rolesToRemove = [verifiedRole, slotRole, teamRole].filter(Boolean);
+        for (const rId of removedIds) {
+          if (!/^\d{15,20}$/.test(rId)) continue;
+          const mem = interaction.guild.members.cache.get(rId) || (await interaction.guild.members.fetch(rId).catch(() => null));
+          if (mem && rolesToRemove.length > 0) {
+            await mem.roles.remove(rolesToRemove as any).catch(() => {});
+          }
+        }
+      }
+      await this.syncTeamRolesForRegistration(interaction.guild, team, config).catch(() => {});
+    }
+
+    if (this.onConfigUpdated) {
+      this.onConfigUpdated();
+    }
+    await this.syncGuildChannels(config, interaction.guild).catch(() => {});
+
+    const updatedEmbed = new EmbedBuilder()
+      .setTitle(`${EMOJI.done} Team Roster Updated Successfully!`)
+      .setColor(0x57F287)
+      .setDescription(
+        `${EMOJI.dividerBar}\n` +
+        `Your roster for **${team.teamName}** (${team.isWaitlist ? `Waitlist #${team.slotNumber}` : `Slot #${team.slotNumber} • ${team.group || 'Group A'}`}) has been updated and synced across \`#slot-list\`, \`#registration-details\`, and your private team voice channel!\n` +
+        `${EMOJI.dividerBar}`
+      )
+      .addFields({
+        name: `${EMOJI.done} Updated Roster (${team.players.length} Players)`,
+        value: team.players.map((p: any, i: number) => `${EMOJI.sword} \`${i + 1}.\` <@${p.id}>`).join('\n'),
+        inline: false
+      })
+      .setTimestamp();
+
+    await interaction.editReply({ embeds: [updatedEmbed] });
   }
 
   public normalizeMemberId(raw: unknown): string {
@@ -480,8 +1313,12 @@ class DiscordBotManager {
     if (!team.isWaitlist) {
       const verifiedRoleName = config?.verifiedRoleName || 'Verified Team';
       const slotRoleName = config?.roleName || 'Confirmed Slot';
-      const verifiedRole = guild.roles.cache.find(r => r.name.toLowerCase() === verifiedRoleName.toLowerCase());
-      const slotRole = guild.roles.cache.find(r => r.name.toLowerCase() === slotRoleName.toLowerCase());
+      const verifiedRole =
+        (config?.verifiedRoleId ? guild.roles.cache.get(config.verifiedRoleId) : undefined) ||
+        guild.roles.cache.find(r => r.name.toLowerCase() === verifiedRoleName.toLowerCase());
+      const slotRole =
+        (config?.slotRoleId ? guild.roles.cache.get(config.slotRoleId) : undefined) ||
+        guild.roles.cache.find(r => r.name.toLowerCase() === slotRoleName.toLowerCase());
       const rolesToAdd = [verifiedRole, slotRole].filter(Boolean);
 
       if (rolesToAdd.length > 0) {
@@ -501,7 +1338,7 @@ class DiscordBotManager {
     }
 
     if (config?.autoCreateTeamVoice !== false) {
-      const wsResult = await this.provisionTeamWorkspace(guild, team, allMemberIds);
+      const wsResult = await this.provisionTeamWorkspace(guild, team, allMemberIds, config);
       if (wsResult.warnings.length > 0) {
         warnings.push(...wsResult.warnings);
       }
@@ -566,18 +1403,23 @@ class DiscordBotManager {
     const tags = Math.max(1, config?.requiredTags || 4);
 
     const panelEmbed = new EmbedBuilder()
-      .setTitle(`🏆 ${title}`)
+      .setTitle(`${EMOJI.giveaway} ${title}`)
       .setColor(0xF59E0B)
       .setDescription(
-        `Tap below to register your team.\n\n` +
-        `**${slots} slots • ${tags} required players**`
+        `${EMOJI.dividerBar}\n` +
+        `${EMOJI.sword} **Official Tournament Registration is OPEN!**\n` +
+        `Tap **Register Your Team** below to submit your squad and claim your slot.\n\n` +
+        `${EMOJI.golden} **Total Capacity:** \`${slots} Slots\`\n` +
+        `${EMOJI.golden} **Required Roster:** \`${tags} Players / Team\`\n` +
+        `${EMOJI.done} **Instant Verification:** Auto-assigns team role & private voice channel\n` +
+        `${EMOJI.dividerBar}`
       )
       .setFooter({ text: `GLACIER CUP • ${title}` })
       .setTimestamp();
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
-        .setCustomId('register_team_panel_btn')
+        .setCustomId(config?.id ? `register_team_panel_btn:${config.id}` : 'register_team_panel_btn')
         .setLabel('Register Your Team')
         .setEmoji('🏆')
         .setStyle(ButtonStyle.Primary)
@@ -587,14 +1429,10 @@ class DiscordBotManager {
   }
 
   public async sendRegistrationPanel(guild: Guild, config: any): Promise<{ success: boolean; channelName?: string; error?: string }> {
-    const regCh = guild.channels.cache.find(
-      c =>
-        c.isTextBased() &&
-        (c.name === config?.regChannel || c.name === '📝┃registration' || c.name === 'registration')
-    ) as TextChannel | undefined;
+    const regCh = this.resolveRegistrationChannel(guild, config);
 
     if (!regCh) {
-      return { success: false, error: `Registration channel (#${config?.regChannel || '📝┃registration'}) not found.` };
+      return { success: false, error: `Registration channel (#${config?.regChannel || 'tournament-registration'}) not found.` };
     }
 
     try {
@@ -617,22 +1455,25 @@ class DiscordBotManager {
     const selectedPlayers = draft?.playerIds || [];
 
     const stepEmbed = new EmbedBuilder()
-      .setTitle(`🏆 ${title} — Team Registration`)
+      .setTitle(`${EMOJI.giveaway} ${title} — Team Registration`)
       .setColor(0xF59E0B)
       .setDescription(
+        `${EMOJI.dividerBar}\n` +
         `Select your **Region** from the dropdown below (and optionally pre-select your **${tags} Players Tags**) to open the registration form:\n\n` +
-        `• **Team Name:** Required (Unique team name)\n` +
-        `• **Region:** \`${draft?.regionSelected ? `${currentRegion} (${countryCode})` : 'Select from dropdown (India, Bangladesh, Pakistan)'}\`\n` +
-        `• **WhatsApp no:** Auto-prefixed with \`${countryCode}\` when **${currentRegion}** is selected\n` +
-        `• **Players Tags:** **Exactly ${tags} players required** *(as set during setup)*` +
+        `${EMOJI.sword} **Team Name:** Required (Unique team name)\n` +
+        `${EMOJI.golden} **Region:** \`${draft?.regionSelected ? `${currentRegion} (${countryCode})` : 'Select from dropdown (India, Bangladesh, Pakistan)'}\`\n` +
+        `${EMOJI.golden} **WhatsApp No:** Auto-prefixed with \`${countryCode}\` when **${currentRegion}** is selected\n` +
+        `${EMOJI.admin} **Players Tags:** **Exactly ${tags} players required** *(as set during setup)*` +
         (selectedPlayers.length > 0
-          ? `\n\n✅ **Pre-selected Players (${selectedPlayers.length}/${tags}):** ${selectedPlayers.map(id => `<@${id}>`).join(', ')}`
-          : '')
+          ? `\n\n${EMOJI.done} **Pre-selected Players (${selectedPlayers.length}/${tags}):** ${selectedPlayers.map(id => `<@${id}>`).join(', ')}`
+          : '') +
+        `\n${EMOJI.dividerBar}`
       )
       .setFooter({ text: 'Selecting a Region opens the Team Registration form with your country code pre-filled' });
 
+    const tourneySuffix = config?.id ? `:${config.id}` : '';
     const regionSelect = new StringSelectMenuBuilder()
-      .setCustomId('reg_region_select')
+      .setCustomId(`reg_region_select${tourneySuffix}`)
       .setPlaceholder('🌍 Region: Select Country (India, Bangladesh, Pakistan)')
       .addOptions(
         new StringSelectMenuOptionBuilder()
@@ -656,13 +1497,13 @@ class DiscordBotManager {
       );
 
     const userSelect = new UserSelectMenuBuilder()
-      .setCustomId('reg_players_select')
+      .setCustomId(`reg_players_select${tourneySuffix}`)
       .setPlaceholder(`👥 Players Tags: Select ${tags} players (Set in setup)`)
       .setMinValues(1)
       .setMaxValues(tags);
 
     const openModalBtn = new ButtonBuilder()
-      .setCustomId('reg_open_modal_btn')
+      .setCustomId(`reg_open_modal_btn${tourneySuffix}`)
       .setLabel(`📝 Fill Registration Form (${currentRegion} ${countryCode})`)
       .setStyle(ButtonStyle.Success);
 
@@ -679,8 +1520,11 @@ class DiscordBotManager {
     preselectedPlayerIds: string[] = []
   ) {
     const tags = Math.max(1, Math.min(10, config?.requiredTags || 4));
+    const modalCustomId = config?.id
+      ? `submit_team_reg_modal:${region}:${config.id}`
+      : `submit_team_reg_modal:${region}`;
     const modal = new ModalBuilder()
-      .setCustomId('submit_team_reg_modal')
+      .setCustomId(modalCustomId)
       .setTitle(`🏆 Register Your Team (${tags} Players)`.slice(0, 45));
 
     const teamNameLabel = new LabelBuilder()
@@ -808,19 +1652,20 @@ class DiscordBotManager {
     }
   }
 
-  private createRulesButtonRow() {
+  private createRulesButtonRow(tournamentId?: string) {
     return new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
-        .setCustomId('open_rules_modal')
-        .setLabel('📜 Enter & Post Rules to #rules-format')
+        .setCustomId(tournamentId ? `open_rules_modal:${tournamentId}` : 'open_rules_modal')
+        .setLabel('📜 Enter & Post Rules to #tournament-rules')
         .setStyle(ButtonStyle.Primary)
     );
   }
 
-  private createDeleteConfirmRow(deleteChannels: boolean) {
+  private createDeleteConfirmRow(deleteChannels: boolean, tournamentId?: string) {
+    const suffix = tournamentId ? `:${tournamentId}` : '';
     return new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
-        .setCustomId(`confirm_delete_tourney:${deleteChannels ? '1' : '0'}`)
+        .setCustomId(`confirm_delete_tourney:${deleteChannels ? '1' : '0'}${suffix}`)
         .setLabel('🗑️ Confirm Delete Tournament')
         .setStyle(ButtonStyle.Danger),
       new ButtonBuilder()
@@ -830,14 +1675,14 @@ class DiscordBotManager {
     );
   }
 
-  private createRulesModal(existingRules?: string) {
+  private createRulesModal(existingRules?: string, tournamentId?: string) {
     const modal = new ModalBuilder()
-      .setCustomId('submit_rules_modal')
+      .setCustomId(tournamentId ? `submit_rules_modal:${tournamentId}` : 'submit_rules_modal')
       .setTitle('Tournament Rules & Format');
 
     const rulesInput = new TextInputBuilder()
       .setCustomId('rules_text')
-      .setLabel('Enter Rules & Format to post in #rules-format')
+      .setLabel('Enter Rules & Format to post in #tournament-rules')
       .setStyle(TextInputStyle.Paragraph)
       .setPlaceholder('Example:\n1. Format: Squads\n2. No emulators or teaming\n3. Join room 5 mins before start...')
       .setRequired(true)
@@ -855,30 +1700,25 @@ class DiscordBotManager {
   public async publishRulesToChannel(
     guild: Guild,
     rulesText: string,
-    authorName?: string
+    authorName?: string,
+    targetConfig?: any
   ): Promise<{ success: boolean; channelId?: string; error?: string }> {
-    const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    const config = targetConfig || this.resolveTournamentContext(guild, null);
     if (config) {
       config.customRules = rulesText;
+      this.syncTournamentToRootConfig(config);
+      if (this.onConfigUpdated) this.onConfigUpdated();
     }
     const title = config?.title || `${guild.name} Tournament`;
-    const targetNames = [config?.rulesChannel, '📋┃rules-format', 'rules-format', 'rules'].filter(Boolean);
 
-    let rulesCh = guild.channels.cache.find(
-      c => c.isTextBased() && targetNames.includes(c.name)
-    ) as TextChannel | undefined;
+    let rulesCh = this.resolveRulesChannel(guild, config);
 
     if (!rulesCh) {
-      const category = guild.channels.cache.find(
-        c => c.type === ChannelType.GuildCategory &&
-             (c.name.toLowerCase() === (config?.categoryName || '').toLowerCase() ||
-              c.name.toLowerCase().includes('tournament') ||
-              c.name.toLowerCase().includes('scrim'))
-      ) as CategoryChannel | undefined;
+      const category = this.resolveTournamentCategory(guild, config);
 
       try {
         rulesCh = await guild.channels.create({
-          name: '📋┃rules-format',
+          name: 'tournament-rules',
           type: ChannelType.GuildText,
           parent: category?.id,
           topic: `Official tournament rules, format and scoring for ${title}`,
@@ -890,24 +1730,279 @@ class DiscordBotManager {
             }
           ]
         });
+        if (config) {
+          config.rulesChannelId = rulesCh.id;
+          config.rulesChannel = rulesCh.name;
+          this.syncTournamentToRootConfig(config);
+          if (this.onConfigUpdated) this.onConfigUpdated();
+        }
       } catch (err: any) {
-        return { success: false, error: `Could not find or create #rules-format: ${err.message}` };
+        return { success: false, error: `Could not find or create #tournament-rules: ${err.message}` };
       }
     }
 
     try {
       const rulesEmbed = new EmbedBuilder()
-        .setTitle(`📜 ${title} — Tournament Rules & Format`)
+        .setTitle(`${EMOJI.admin} ${title} — Official Tournament Rulebook`)
         .setColor(0x5865F2)
-        .setDescription(rulesText)
+        .setDescription(`${EMOJI.dividerBar}\n${rulesText}\n${EMOJI.dividerBar}`)
         .setFooter({ text: authorName ? `Published by @${authorName} • FFA-Manager` : 'FFA-Manager' })
         .setTimestamp();
 
       await rulesCh.send({ embeds: [rulesEmbed] });
-      this.logEvent('success', `Published custom tournament rules to #${rulesCh.name}`, guild.name);
+      this.logEvent('success', `Published custom tournament rules to #${rulesCh.name} (${title})`, guild.name);
       return { success: true, channelId: rulesCh.id };
     } catch (err: any) {
       return { success: false, error: err.message };
+    }
+  }
+
+  public getAvailableTextChannels(guildId?: string): Array<{
+    id: string;
+    name: string;
+    guildId: string;
+    guildName: string;
+    isRulesChannel: boolean;
+  }> {
+    if (!this.client || !this.client.isReady()) return [];
+    const channels: Array<{
+      id: string;
+      name: string;
+      guildId: string;
+      guildName: string;
+      isRulesChannel: boolean;
+    }> = [];
+
+    const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    const rulesNames = new Set([
+      'rules',
+      'tournament-rules',
+      'rules-format',
+      '📋┃rules-format',
+      (rootConfig?.rulesChannel || '').toLowerCase()
+    ]);
+
+    const targetGuilds = guildId
+      ? [this.client.guilds.cache.get(guildId)].filter(Boolean)
+      : Array.from(this.client.guilds.cache.values());
+
+    for (const g of targetGuilds) {
+      if (!g) continue;
+      for (const [, ch] of g.channels.cache) {
+        if (ch.isTextBased() && ch.type === ChannelType.GuildText) {
+          const cleanName = ch.name.toLowerCase().replace(/^[^\w]+/, '');
+          const isRules =
+            ch.id === rootConfig?.rulesChannelId ||
+            rulesNames.has(ch.name.toLowerCase()) ||
+            cleanName.includes('rule');
+
+          channels.push({
+            id: ch.id,
+            name: ch.name,
+            guildId: g.id,
+            guildName: g.name,
+            isRulesChannel: isRules
+          });
+        }
+      }
+    }
+
+    return channels.sort((a, b) =>
+      a.isRulesChannel === b.isRulesChannel ? a.name.localeCompare(b.name) : a.isRulesChannel ? -1 : 1
+    );
+  }
+
+  public async sendCustomEmbed(payload: {
+    channelId?: string;
+    guildId?: string;
+    content?: string;
+    embed: {
+      title?: string;
+      description?: string;
+      url?: string;
+      color?: string | number;
+      author?: {
+        name?: string;
+        icon_url?: string;
+        url?: string;
+      };
+      thumbnail?: {
+        url?: string;
+      };
+      image?: {
+        url?: string;
+      };
+      footer?: {
+        text?: string;
+        icon_url?: string;
+      };
+      timestamp?: boolean | string;
+      fields?: Array<{
+        name: string;
+        value: string;
+        inline?: boolean;
+      }>;
+    };
+    tournamentId?: string;
+  }): Promise<{
+    success: boolean;
+    channelId?: string;
+    channelName?: string;
+    messageId?: string;
+    error?: string;
+  }> {
+    if (!this.client || !this.client.isReady()) {
+      return { success: false, error: 'Discord bot is offline. Please ensure bot token is configured and bot is online.' };
+    }
+
+    let targetChannel: TextChannel | null = null;
+    let targetGuild: Guild | null = null;
+
+    if (payload.channelId) {
+      try {
+        const ch =
+          this.client.channels.cache.get(payload.channelId) ||
+          (await this.client.channels.fetch(payload.channelId).catch(() => null));
+        if (ch && ch.isTextBased() && 'guild' in ch) {
+          targetChannel = ch as TextChannel;
+          targetGuild = ch.guild as Guild;
+        }
+      } catch {
+        // continue
+      }
+    }
+
+    if (!targetChannel) {
+      const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+      const targetConfig =
+        payload.tournamentId && rootConfig?.tournaments?.[payload.tournamentId]
+          ? rootConfig.tournaments[payload.tournamentId]
+          : rootConfig;
+
+      const guild = payload.guildId
+        ? this.client.guilds.cache.get(payload.guildId)
+        : this.client.guilds.cache.first();
+
+      if (!guild) {
+        return { success: false, error: 'No Discord servers found where this bot is present.' };
+      }
+
+      targetGuild = guild;
+      targetChannel = this.resolveRulesChannel(guild, targetConfig) || null;
+
+      if (!targetChannel) {
+        const textCh = guild.channels.cache.find(
+          c => c.isTextBased() && c.type === ChannelType.GuildText
+        ) as TextChannel | undefined;
+        if (textCh) {
+          targetChannel = textCh;
+        } else {
+          return { success: false, error: `Could not find a text channel in "${guild.name}" to publish the embed.` };
+        }
+      }
+    }
+
+    try {
+      const eData = payload.embed || {};
+      const embed = new EmbedBuilder();
+
+      if (eData.title && eData.title.trim()) {
+        embed.setTitle(eData.title.trim().slice(0, 256));
+      }
+
+      if (eData.description && eData.description.trim()) {
+        embed.setDescription(eData.description.trim().slice(0, 4096));
+      }
+
+      if (eData.url && eData.url.trim() && /^https?:\/\//i.test(eData.url.trim())) {
+        embed.setURL(eData.url.trim());
+      }
+
+      let parsedColor = 0x38BDF8;
+      if (eData.color !== undefined && eData.color !== null) {
+        if (typeof eData.color === 'number') {
+          parsedColor = eData.color;
+        } else if (typeof eData.color === 'string') {
+          const hex = eData.color.replace(/^#/, '').trim();
+          const num = parseInt(hex, 16);
+          if (!isNaN(num)) parsedColor = num;
+        }
+      }
+      embed.setColor(parsedColor);
+
+      if (eData.author?.name?.trim()) {
+        embed.setAuthor({
+          name: eData.author.name.trim().slice(0, 256),
+          iconURL: eData.author.icon_url?.trim() || undefined,
+          url: eData.author.url?.trim() || undefined
+        });
+      }
+
+      if (eData.thumbnail?.url?.trim() && /^https?:\/\//i.test(eData.thumbnail.url.trim())) {
+        embed.setThumbnail(eData.thumbnail.url.trim());
+      }
+
+      if (eData.image?.url?.trim() && /^https?:\/\//i.test(eData.image.url.trim())) {
+        embed.setImage(eData.image.url.trim());
+      }
+
+      if (eData.footer?.text?.trim()) {
+        embed.setFooter({
+          text: eData.footer.text.trim().slice(0, 2048),
+          iconURL: eData.footer.icon_url?.trim() || undefined
+        });
+      }
+
+      if (eData.timestamp) {
+        if (typeof eData.timestamp === 'string') {
+          const d = new Date(eData.timestamp);
+          embed.setTimestamp(!isNaN(d.getTime()) ? d : new Date());
+        } else {
+          embed.setTimestamp();
+        }
+      }
+
+      if (Array.isArray(eData.fields)) {
+        for (const f of eData.fields.slice(0, 25)) {
+          if (f.name && f.name.trim() && f.value && f.value.trim()) {
+            embed.addFields({
+              name: f.name.trim().slice(0, 256),
+              value: f.value.trim().slice(0, 1024),
+              inline: Boolean(f.inline)
+            });
+          }
+        }
+      }
+
+      const sendOptions: any = { embeds: [embed] };
+      if (payload.content && payload.content.trim()) {
+        sendOptions.content = payload.content.trim().slice(0, 2000);
+      }
+
+      const sent = await targetChannel.send(sendOptions);
+
+      if (eData.description) {
+        const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+        if (rootConfig) {
+          rootConfig.customRules = eData.description;
+          if (this.onConfigUpdated) this.onConfigUpdated();
+        }
+      }
+
+      this.logEvent(
+        'success',
+        `Dispatched Discohook-style embed "${eData.title || 'Custom Rules'}" to #${targetChannel.name} in "${targetGuild?.name || 'Server'}"`,
+        targetGuild?.name
+      );
+
+      return {
+        success: true,
+        channelId: targetChannel.id,
+        channelName: targetChannel.name,
+        messageId: sent.id
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to send embed to Discord' };
     }
   }
 
@@ -920,6 +2015,7 @@ class DiscordBotManager {
     const existing = this.blacklist.find(b => b.userId === cleanId);
     if (existing) {
       existing.reason = reason || existing.reason;
+      if (this.onConfigUpdated) this.onConfigUpdated();
       return existing;
     }
     const entry = {
@@ -930,6 +2026,7 @@ class DiscordBotManager {
       addedAt: new Date().toISOString()
     };
     this.blacklist.push(entry);
+    if (this.onConfigUpdated) this.onConfigUpdated();
     this.logEvent('warn', `Blacklisted player @${entry.username} (${cleanId}) — Reason: ${entry.reason}`);
     return entry;
   }
@@ -939,6 +2036,7 @@ class DiscordBotManager {
     const idx = this.blacklist.findIndex(b => b.userId === cleanId || b.username.toLowerCase() === cleanId.toLowerCase());
     if (idx !== -1) {
       const removed = this.blacklist.splice(idx, 1)[0];
+      if (this.onConfigUpdated) this.onConfigUpdated();
       this.logEvent('info', `Removed player @${removed.username} (${removed.userId}) from blacklist.`);
       return true;
     }
@@ -979,7 +2077,7 @@ class DiscordBotManager {
     const groupsCount = Math.max(1, Math.ceil(totalSlots / teamsPerGroup));
 
     if (confirmed.length === 0) {
-      return ['**Group A**\n*No teams registered yet.*'];
+      return [`${EMOJI.golden} **Group A**\n*No teams registered yet.*`];
     }
 
     const sections: string[] = [];
@@ -999,11 +2097,11 @@ class DiscordBotManager {
       const teamLines =
         groupTeams.length > 0
           ? groupTeams
-              .map(t => `\`${t.slotNumber < 10 ? '0' + t.slotNumber : t.slotNumber}.\` **${t.teamName}** — <@${t.captain.id}>`)
+              .map(t => `${EMOJI.sword} \`#${t.slotNumber < 10 ? '0' + t.slotNumber : t.slotNumber}\` **${t.teamName}** — <@${t.captain.id}>`)
               .join('\n')
           : '*No teams in this group*';
 
-      sections.push(`**Group ${groupLetter}**\n${teamLines}`);
+      sections.push(`${EMOJI.golden} **Group ${groupLetter}**\n${teamLines}`);
     }
 
     const chunks: string[] = [];
@@ -1020,7 +2118,7 @@ class DiscordBotManager {
       chunks.push(currentChunk);
     }
 
-    return chunks.length > 0 ? chunks : ['**Group A**\n*No teams registered yet.*'];
+    return chunks.length > 0 ? chunks : [`${EMOJI.golden} **Group A**\n*No teams registered yet.*`];
   }
 
   public hasBotManagerRole(
@@ -1076,7 +2174,8 @@ class DiscordBotManager {
   public async provisionTeamWorkspace(
     guild: Guild,
     team: any,
-    playerIds: string[] = []
+    playerIds: string[] = [],
+    tournamentConfig?: any
   ): Promise<{
     roleId?: string;
     roleName: string;
@@ -1088,7 +2187,7 @@ class DiscordBotManager {
   }> {
     const cleanTeamName = (team.teamName || 'Team').trim().slice(0, 90);
     const roleName = cleanTeamName;
-    const categoryName = cleanTeamName;
+    const categoryName = 'Team Voice Lobbies';
     const voiceChannelName = cleanTeamName;
     const warnings: string[] = [];
 
@@ -1113,7 +2212,7 @@ class DiscordBotManager {
       }
     }
 
-    const configForRoles = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    const configForRoles = tournamentConfig || (this.getTournamentConfig ? this.getTournamentConfig() : null);
     const reservedRoleNames = new Set([
       '@everyone',
       'ffa bot manager',
@@ -1125,12 +2224,7 @@ class DiscordBotManager {
     const effectiveRoleName = reservedRoleNames.has(roleName.toLowerCase()) ? `Team ${roleName}` : roleName;
     team.teamRoleName = effectiveRoleName;
 
-    let teamRole = guild.roles.cache.find(
-      r =>
-        !reservedRoleNames.has(r.name.toLowerCase()) &&
-        !r.managed &&
-        ((team.teamRoleId && r.id === team.teamRoleId) || r.name.toLowerCase() === effectiveRoleName.toLowerCase())
-    );
+    let teamRole = team.teamRoleId ? guild.roles.cache.get(team.teamRoleId) : undefined;
     if (!teamRole && canManageRoles) {
       try {
         teamRole = await guild.roles.create({
@@ -1201,7 +2295,8 @@ class DiscordBotManager {
             PermissionsBitField.Flags.Connect,
             PermissionsBitField.Flags.Speak,
             PermissionsBitField.Flags.Stream,
-            PermissionsBitField.Flags.UseVAD
+            PermissionsBitField.Flags.UseVAD,
+            PermissionsBitField.Flags.CreateInstantInvite
           ]
         });
       }
@@ -1214,7 +2309,8 @@ class DiscordBotManager {
             PermissionsBitField.Flags.Connect,
             PermissionsBitField.Flags.Speak,
             PermissionsBitField.Flags.Stream,
-            PermissionsBitField.Flags.UseVAD
+            PermissionsBitField.Flags.UseVAD,
+            PermissionsBitField.Flags.CreateInstantInvite
           ]
         });
       }
@@ -1227,16 +2323,18 @@ class DiscordBotManager {
             PermissionsBitField.Flags.ManageChannels,
             PermissionsBitField.Flags.Connect,
             PermissionsBitField.Flags.Speak,
-            PermissionsBitField.Flags.MoveMembers
+            PermissionsBitField.Flags.MoveMembers,
+            PermissionsBitField.Flags.CreateInstantInvite
           ]
         });
       }
 
-      const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
-      const managerRoleName = (config?.managerRoleName || 'FFA Bot Manager').trim().toLowerCase();
-      const managerRole = guild.roles.cache.find(
-        r => r.name.trim().toLowerCase() === managerRoleName || r.name.trim().toLowerCase() === 'ffa bot manager'
-      );
+      const managerRoleName = (configForRoles?.managerRoleName || 'FFA Bot Manager').trim().toLowerCase();
+      const managerRole =
+        (configForRoles?.managerRoleId ? guild.roles.cache.get(configForRoles.managerRoleId) : undefined) ||
+        guild.roles.cache.find(
+          r => r.name.trim().toLowerCase() === managerRoleName || r.name.trim().toLowerCase() === 'ffa bot manager'
+        );
       if (managerRole) {
         overwrites.push({
           id: managerRole.id,
@@ -1244,38 +2342,76 @@ class DiscordBotManager {
             PermissionsBitField.Flags.ViewChannel,
             PermissionsBitField.Flags.Connect,
             PermissionsBitField.Flags.Speak,
-            PermissionsBitField.Flags.MoveMembers
+            PermissionsBitField.Flags.MoveMembers,
+            PermissionsBitField.Flags.CreateInstantInvite
           ]
         });
       }
 
       try {
-        teamCategory = guild.channels.cache.find(
-          c =>
-            c.type === ChannelType.GuildCategory &&
-            (c.id === team.teamCategoryId || c.name.toLowerCase() === categoryName.toLowerCase())
-        ) as CategoryChannel | undefined;
+        if (team.teamCategoryId) {
+          const existingCat = guild.channels.cache.get(team.teamCategoryId);
+          if (
+            existingCat &&
+            existingCat.type === ChannelType.GuildCategory &&
+            existingCat.name.trim().toLowerCase() === categoryName.toLowerCase()
+          ) {
+            teamCategory = existingCat as CategoryChannel;
+          }
+        }
 
         if (!teamCategory) {
+          teamCategory = guild.channels.cache.find(
+            c =>
+              c.type === ChannelType.GuildCategory &&
+              c.name.trim().toLowerCase() === categoryName.toLowerCase() &&
+              guild.channels.cache.filter(ch => ch.parentId === c.id).size < 50
+          ) as CategoryChannel | undefined;
+        }
+
+        if (!teamCategory) {
+          const categoryOverwrites: any[] = [];
+          if (botMember) {
+            categoryOverwrites.push({
+              id: botMember.id,
+              allow: [
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.ManageChannels,
+                PermissionsBitField.Flags.Connect,
+                PermissionsBitField.Flags.Speak,
+                PermissionsBitField.Flags.MoveMembers
+              ]
+            });
+          }
+          if (managerRole) {
+            categoryOverwrites.push({
+              id: managerRole.id,
+              allow: [
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.Connect,
+                PermissionsBitField.Flags.Speak,
+                PermissionsBitField.Flags.MoveMembers
+              ]
+            });
+          }
+
           teamCategory = await guild.channels.create({
             name: categoryName,
             type: ChannelType.GuildCategory,
-            permissionOverwrites: overwrites,
-            reason: `FFA-Manager Team Category for ${cleanTeamName} (Slot #${team.slotNumber})`
+            permissionOverwrites: categoryOverwrites,
+            reason: `FFA-Manager Shared Team Voice Lobbies Category`
           });
-        } else {
-          await teamCategory.permissionOverwrites.set(overwrites).catch(() => {});
         }
 
         team.teamCategoryId = teamCategory.id;
         team.teamCategoryName = teamCategory.name;
 
-        voiceChannel = guild.channels.cache.find(
-          c =>
-            c.type === ChannelType.GuildVoice &&
-            (c.id === team.teamVoiceChannelId ||
-              (c.parentId === teamCategory!.id && c.name.toLowerCase() === voiceChannelName.toLowerCase()))
-        );
+        if (team.teamVoiceChannelId) {
+          const existingVc = guild.channels.cache.get(team.teamVoiceChannelId);
+          if (existingVc && existingVc.type === ChannelType.GuildVoice) {
+            voiceChannel = existingVc;
+          }
+        }
 
         if (!voiceChannel) {
           voiceChannel = await guild.channels.create({
@@ -1286,11 +2422,29 @@ class DiscordBotManager {
             reason: `FFA-Manager Private Voice Channel for ${cleanTeamName} (Slot #${team.slotNumber})`
           });
         } else {
+          if (voiceChannel.parentId !== teamCategory.id) {
+            await voiceChannel.setParent(teamCategory.id, { lockPermissions: false }).catch(() => {});
+          }
           await voiceChannel.permissionOverwrites.set(overwrites).catch(() => {});
         }
 
         team.teamVoiceChannelId = voiceChannel.id;
         team.teamVoiceChannelName = voiceChannel.name;
+
+        if (typeof voiceChannel.createInvite === 'function') {
+          try {
+            const invite = await voiceChannel.createInvite({
+              maxAge: 0,
+              maxUses: 0,
+              unique: false,
+              reason: `Direct voice channel join link for ${cleanTeamName}`
+            });
+            if (invite?.url) {
+              team.teamVoiceInviteUrl = invite.url;
+            }
+          } catch {
+          }
+        }
       } catch (err: any) {
         warnings.push(`Could not create team category or voice channel for "${cleanTeamName}": ${err.message}`);
       }
@@ -1315,13 +2469,47 @@ class DiscordBotManager {
     };
   }
 
-  private createVoiceConnectButtonRow(guildId: string, voiceChannelId: string, channelName: string) {
+  private async resolveVoiceConnectUrl(
+    guild: Guild,
+    voiceChannelId: string,
+    existingInviteUrl?: string
+  ): Promise<string> {
+    if (existingInviteUrl && existingInviteUrl.startsWith('https://discord.gg/')) {
+      return existingInviteUrl;
+    }
+    try {
+      const ch =
+        guild.channels.cache.get(voiceChannelId) ||
+        (await guild.channels.fetch(voiceChannelId).catch(() => null));
+      if (ch && ch.type === ChannelType.GuildVoice && typeof (ch as any).createInvite === 'function') {
+        const invite = await (ch as any).createInvite({
+          maxAge: 0,
+          maxUses: 0,
+          unique: false,
+          reason: 'Direct voice channel join button'
+        });
+        if (invite?.url) {
+          return invite.url;
+        }
+      }
+    } catch {
+    }
+    return `https://discord.com/channels/${guild.id}/${voiceChannelId}`;
+  }
+
+  private createVoiceConnectButtonRow(
+    guildId: string,
+    voiceChannelId: string,
+    channelName: string,
+    inviteUrl?: string
+  ) {
     const cleanLabel = `🔊 Connect to ${channelName}`.slice(0, 80);
+    const targetUrl = inviteUrl || `https://discord.com/channels/${guildId}/${voiceChannelId}`;
     return new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setLabel(cleanLabel)
         .setStyle(ButtonStyle.Link)
-        .setURL(`https://discord.com/channels/${guildId}/${voiceChannelId}`)
+        .setURL(targetUrl)
     );
   }
 
@@ -1333,6 +2521,27 @@ class DiscordBotManager {
     await guild.roles.fetch().catch(() => {});
 
     const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    const allTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+    const otherTeamVoiceIds = new Set<string>();
+    const otherTeamCategoryIds = new Set<string>();
+    const otherTeamRoleIds = new Set<string>();
+
+    for (const t of allTeams) {
+      if (t.id !== team.id) {
+        if (t.teamVoiceChannelId) otherTeamVoiceIds.add(t.teamVoiceChannelId);
+        if (t.teamCategoryId) otherTeamCategoryIds.add(t.teamCategoryId);
+        if (t.teamRoleId) otherTeamRoleIds.add(t.teamRoleId);
+      }
+    }
+    if (config?.tournaments) {
+      for (const tCfg of Object.values(config.tournaments) as any[]) {
+        if (tCfg?.categoryId) otherTeamCategoryIds.add(tCfg.categoryId);
+        if (tCfg?.verifiedRoleId) otherTeamRoleIds.add(tCfg.verifiedRoleId);
+        if (tCfg?.slotRoleId) otherTeamRoleIds.add(tCfg.slotRoleId);
+        if (tCfg?.managerRoleId) otherTeamRoleIds.add(tCfg.managerRoleId);
+      }
+    }
+
     const protectedRoleNames = new Set(
       [
         '@everyone',
@@ -1352,13 +2561,15 @@ class DiscordBotManager {
     const cleanCatName = (team.teamCategoryName || '').trim().toLowerCase();
 
     // 1. Voice channel deletion
-    const targetVc = guild.channels.cache.find(
-      c =>
-        c.type === ChannelType.GuildVoice &&
-        ((team.teamVoiceChannelId && c.id === team.teamVoiceChannelId) ||
-          (cleanVcName && (c.name.toLowerCase() === cleanVcName || c.name.toLowerCase() === `🔊 ${cleanVcName}` || c.name.toLowerCase().replace(/^🔊\s*/, '') === cleanVcName)) ||
-          (cleanTeamName && (c.name.toLowerCase() === cleanTeamName || c.name.toLowerCase() === `🔊 ${cleanTeamName}` || c.name.toLowerCase().replace(/^🔊\s*/, '') === cleanTeamName || c.name.toLowerCase().includes(cleanTeamName))))
-    );
+    const targetVc = team.teamVoiceChannelId
+      ? guild.channels.cache.get(team.teamVoiceChannelId)
+      : guild.channels.cache.find(
+          c =>
+            c.type === ChannelType.GuildVoice &&
+            !otherTeamVoiceIds.has(c.id) &&
+            ((cleanVcName && (c.name.toLowerCase() === cleanVcName || c.name.toLowerCase() === `🔊 ${cleanVcName}` || c.name.toLowerCase().replace(/^🔊\s*/, '') === cleanVcName)) ||
+              (cleanTeamName && (c.name.toLowerCase() === cleanTeamName || c.name.toLowerCase() === `🔊 ${cleanTeamName}` || c.name.toLowerCase().replace(/^🔊\s*/, '') === cleanTeamName)))
+        );
 
     if (targetVc) {
       try {
@@ -1370,40 +2581,45 @@ class DiscordBotManager {
       }
     }
 
-    // 2. Category deletion
-    const targetCat = guild.channels.cache.find(
-      c =>
-        c.type === ChannelType.GuildCategory &&
-        ((team.teamCategoryId && c.id === team.teamCategoryId) ||
-          (cleanCatName && c.name.toLowerCase() === cleanCatName) ||
-          (cleanTeamName && c.name.toLowerCase() === cleanTeamName))
+    // 2. Category deletion (only if no other channels remain inside it)
+    const targetCat = (
+      team.teamCategoryId
+        ? guild.channels.cache.get(team.teamCategoryId)
+        : guild.channels.cache.find(
+            c =>
+              c.type === ChannelType.GuildCategory &&
+              !otherTeamCategoryIds.has(c.id) &&
+              ((cleanCatName && c.name.toLowerCase() === cleanCatName) ||
+                (cleanTeamName && c.name.toLowerCase() === cleanTeamName))
+          )
     ) as CategoryChannel | undefined;
 
-    if (targetCat) {
-      try {
-        const children = guild.channels.cache.filter(c => c.parentId === targetCat.id);
-        for (const [, child] of children) {
-          await child.delete(`FFA-Manager cleanup for team ${team.teamName}`).catch(() => {});
+    if (targetCat && targetCat.type === ChannelType.GuildCategory && !otherTeamCategoryIds.has(targetCat.id)) {
+      const remainingChildren = guild.channels.cache.filter(c => c.parentId === targetCat.id);
+      if (remainingChildren.size === 0) {
+        try {
+          const catName = targetCat.name;
+          await targetCat.delete(`FFA-Manager cleanup for empty category ${catName}`);
+          cleaned.push(`Category: ${catName}`);
+        } catch (err: any) {
+          console.warn(`[DiscordBot] Notice deleting team category: ${err.message}`);
         }
-        const catName = targetCat.name;
-        await targetCat.delete(`FFA-Manager cleanup for team ${team.teamName}`);
-        cleaned.push(`Category: ${catName}`);
-      } catch (err: any) {
-        console.warn(`[DiscordBot] Notice deleting team category: ${err.message}`);
       }
     }
 
     // 3. Team role deletion
-    const targetRole = guild.roles.cache.find(
-      r =>
-        !protectedRoleNames.has(r.name.toLowerCase()) &&
-        !r.managed &&
-        (isAdmin || r.position < botHighestRolePos) &&
-        ((team.teamRoleId && r.id === team.teamRoleId) ||
-          (team.teamRoleName && r.name.toLowerCase() === team.teamRoleName.toLowerCase()) ||
-          (cleanTeamName && (r.name.toLowerCase() === cleanTeamName || r.name.toLowerCase() === `@${cleanTeamName}`)))
-    );
-    if (targetRole) {
+    const targetRole = team.teamRoleId
+      ? guild.roles.cache.get(team.teamRoleId)
+      : guild.roles.cache.find(
+          r =>
+            !protectedRoleNames.has(r.name.toLowerCase()) &&
+            !otherTeamRoleIds.has(r.id) &&
+            !r.managed &&
+            (isAdmin || r.position < botHighestRolePos) &&
+            ((team.teamRoleName && r.name.toLowerCase() === team.teamRoleName.toLowerCase()) ||
+              (cleanTeamName && (r.name.toLowerCase() === cleanTeamName || r.name.toLowerCase() === `@${cleanTeamName}`)))
+        );
+    if (targetRole && !targetRole.managed && (isAdmin || targetRole.position < botHighestRolePos)) {
       try {
         const rName = targetRole.name;
         await targetRole.delete(`FFA-Manager cleanup for team ${team.teamName}`);
@@ -1416,210 +2632,11 @@ class DiscordBotManager {
     return cleaned;
   }
 
-  public async startRegistration(
-    targetGuild?: Guild,
-    staffTag?: string
-  ): Promise<{
-    success: boolean;
-    unlockedChannels: string[];
-    warnings: string[];
-    error?: string;
-  }> {
-    return this.withOperationLock(async () => {
-      const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
-      if (!config.totalSlots || config.totalSlots <= 0) {
-        config.totalSlots = 20;
-      }
-
-      config.status = 'open';
-      config.explicitlyStoppedOrPaused = false;
-      const unlockedChannels: string[] = [];
-      const warnings: string[] = [];
-
-      const guilds = targetGuild
-        ? [targetGuild]
-        : this.client
-        ? Array.from(this.client.guilds.cache.values())
-        : [];
-
-      const tags = config.requiredTags || 4;
-      let sampleRoster = `Team Name: Glacier Titans\nRegion: India\nWhatsApp: +919876543210\nBackup WhatsApp: +919876543211\n`;
-      for (let i = 1; i <= tags; i++) {
-        sampleRoster += `Player ${i}: @Player${i}\n`;
-      }
-
-      for (const guild of guilds) {
-        const regCh = guild.channels.cache.find(
-          c =>
-            c.isTextBased() &&
-            (c.name === config.regChannel || c.name === '📝┃registration' || c.name === 'registration')
-        ) as TextChannel | undefined;
-
-        if (regCh) {
-          try {
-            await regCh.permissionOverwrites.edit(
-              guild.roles.everyone.id,
-              {
-                ViewChannel: true,
-                SendMessages: true,
-                ReadMessageHistory: true
-              },
-              { reason: `Registration started by ${staffTag || 'Staff'}` }
-            );
-            unlockedChannels.push(`#${regCh.name}`);
-          } catch (err: any) {
-            warnings.push(`Could not unlock #${regCh.name} in "${guild.name}": ${err.message}`);
-          }
-
-          try {
-            const openEmbed = new EmbedBuilder()
-              .setTitle(`🟢 ${config.title || 'Tournament'} — Registration Started!`)
-              .setColor(0x00E676)
-              .setDescription(
-                `Registration is now **OPEN** and <#${regCh.id}> is **UNLOCKED**!\n\n` +
-                `Submit your team roster using the format below:\n\`\`\`text\n${sampleRoster}\`\`\``
-              )
-              .addFields(
-                { name: 'Total Slots', value: `\`${config.totalSlots} Slots\``, inline: true },
-                { name: 'Teams Per Group', value: `\`${config.teamsPerGroup || config.totalSlots} Teams/Group\` (\`${config.groupsCount || 1} Group(s)\`)`, inline: true },
-                { name: 'Required Tags', value: `\`${tags} Player Mentions\``, inline: true }
-              )
-              .setFooter({ text: staffTag ? `Started by @${staffTag} • FFA | Glacier Cup Manager™` : 'FFA | Glacier Cup Manager™' })
-              .setTimestamp();
-
-            const panelPayload = this.createRegistrationPanelPayload(config);
-            await regCh.send({
-              content: '@here 🟢 **Registration is now OPEN!**',
-              embeds: [openEmbed, ...panelPayload.embeds],
-              components: panelPayload.components
-            });
-          } catch (err: any) {
-            warnings.push(`Could not post start announcement in #${regCh.name}: ${err.message}`);
-          }
-        } else {
-          warnings.push(`Registration channel (#${config.regChannel || '📝┃registration'}) not found in "${guild.name}".`);
-        }
-
-        await this.updateSlotListChannel(guild, config).catch(() => {});
-      }
-
-      if (this.onConfigUpdated) {
-        this.onConfigUpdated();
-      }
-
-      this.logEvent(
-        'success',
-        `Registration STARTED and #registration unlocked by ${staffTag || 'Staff'} (${unlockedChannels.join(', ') || 'status set to OPEN'}).`,
-        targetGuild?.name
-      );
-
-      return {
-        success: true,
-        unlockedChannels,
-        warnings
-      };
-    });
-  }
-
-  public async pauseRegistration(
-    targetGuild?: Guild,
-    reason?: string,
-    staffTag?: string
-  ): Promise<{
-    success: boolean;
-    pausedChannels: string[];
-    warnings: string[];
-    error?: string;
-  }> {
-    return this.withOperationLock(async () => {
-      const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
-      if (!config || !config.totalSlots || config.totalSlots <= 0) {
-        return {
-          success: false,
-          pausedChannels: [],
-          warnings: [],
-          error: 'No active tournament is configured. Run `/setup` first.'
-        };
-      }
-
-      config.status = 'paused';
-      config.explicitlyStoppedOrPaused = true;
-      if (this.onConfigUpdated) {
-        this.onConfigUpdated();
-      }
-
-      const pausedChannels: string[] = [];
-      const warnings: string[] = [];
-      const pauseReason = reason?.trim() || 'Registration has been temporarily paused by tournament staff.';
-
-      const guilds = targetGuild
-        ? [targetGuild]
-        : this.client
-        ? Array.from(this.client.guilds.cache.values())
-        : [];
-
-      for (const guild of guilds) {
-        const regCh = guild.channels.cache.find(
-          c =>
-            c.isTextBased() &&
-            (c.name === config.regChannel || c.name === '📝┃registration' || c.name === 'registration')
-        ) as TextChannel | undefined;
-
-        if (regCh) {
-          try {
-            await regCh.permissionOverwrites.edit(
-              guild.roles.everyone.id,
-              {
-                ViewChannel: true,
-                SendMessages: false,
-                ReadMessageHistory: true
-              },
-              { reason: `Registration paused by ${staffTag || 'Staff'}: ${pauseReason}` }
-            );
-            pausedChannels.push(`#${regCh.name}`);
-          } catch (err: any) {
-            warnings.push(`Could not lock #${regCh.name} in "${guild.name}": ${err.message}`);
-          }
-
-          try {
-            const pauseEmbed = new EmbedBuilder()
-              .setTitle(`⏸️ ${config.title || 'Tournament'} — Registration Paused`)
-              .setColor(0xFEE75C)
-              .setDescription(
-                `Registration for **${config.title || 'this tournament'}** is currently **PAUSED** and <#${regCh.id}> is temporarily locked.\n` +
-                `**Reason:** ${pauseReason}\n\n` +
-                `▶️ Registration will resume as soon as staff run \`/start-registration\`.`
-              )
-              .setFooter({ text: staffTag ? `Paused by @${staffTag} • FFA | Glacier Cup Manager™` : 'FFA | Glacier Cup Manager™' })
-              .setTimestamp();
-
-            await regCh.send({ embeds: [pauseEmbed] });
-          } catch (err: any) {
-            warnings.push(`Could not post pause announcement in #${regCh.name}: ${err.message}`);
-          }
-        }
-
-        await this.updateSlotListChannel(guild, config).catch(() => {});
-      }
-
-      this.logEvent(
-        'warn',
-        `Registration PAUSED and #registration temporarily locked by ${staffTag || 'Staff'}: ${pauseReason}`,
-        targetGuild?.name
-      );
-
-      return {
-        success: true,
-        pausedChannels,
-        warnings
-      };
-    });
-  }
-
   public async stopRegistration(
     targetGuild?: Guild,
     reason?: string,
-    staffTag?: string
+    staffTag?: string,
+    targetConfig?: any
   ): Promise<{
     success: boolean;
     lockedChannels: string[];
@@ -1627,7 +2644,7 @@ class DiscordBotManager {
     error?: string;
   }> {
     return this.withOperationLock(async () => {
-      const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
+      const config = targetConfig || this.resolveTournamentContext(targetGuild, null);
       if (!config) {
         return {
           success: false,
@@ -1639,6 +2656,7 @@ class DiscordBotManager {
 
       config.status = 'closed';
       config.explicitlyStoppedOrPaused = true;
+      this.syncTournamentToRootConfig(config);
       if (this.onConfigUpdated) {
         this.onConfigUpdated();
       }
@@ -1653,11 +2671,7 @@ class DiscordBotManager {
         : [];
 
       for (const guild of guilds) {
-        const regCh = guild.channels.cache.find(
-          c =>
-            c.isTextBased() &&
-            (c.name === config.regChannel || c.name === '📝┃registration' || c.name === 'registration')
-        ) as TextChannel | undefined;
+        const regCh = this.resolveRegistrationChannel(guild, config);
 
         if (regCh) {
           try {
@@ -1677,11 +2691,13 @@ class DiscordBotManager {
 
           try {
             const closeEmbed = new EmbedBuilder()
-              .setTitle(`🔴 ${config.title || 'Tournament'} — Registration Ended & Channel Locked`)
+              .setTitle(`${EMOJI.alert} ${config.title || 'Tournament'} — Registration Ended & Channel Locked`)
               .setColor(0xED4245)
               .setDescription(
-                `Registration for **${config.title || 'this tournament'}** is now **CLOSED** and <#${regCh.id}> has been **LOCKED**.\n` +
-                `**Reason:** ${closeReason}`
+                `${EMOJI.dividerBar}\n` +
+                `${EMOJI.alert} Registration for **${config.title || 'this tournament'}** is now **CLOSED** and <#${regCh.id}> has been **LOCKED**.\n\n` +
+                `${EMOJI.admin} **Reason:** ${closeReason}\n` +
+                `${EMOJI.dividerBar}`
               )
               .setFooter({ text: staffTag ? `Stopped by @${staffTag} • FFA | Glacier Cup Manager™` : 'FFA | Glacier Cup Manager™' })
               .setTimestamp();
@@ -1697,7 +2713,7 @@ class DiscordBotManager {
 
       this.logEvent(
         'warn',
-        `Registration STOPPED and #registration locked by ${staffTag || 'Staff'}: ${closeReason}`,
+        `Registration STOPPED and #registration locked for "${config.title || 'Tournament'}" by ${staffTag || 'Staff'}: ${closeReason}`,
         targetGuild?.name
       );
 
@@ -1712,7 +2728,8 @@ class DiscordBotManager {
   public async swapSlots(
     slot1: number,
     slot2: number,
-    guild?: Guild
+    guild?: Guild,
+    targetConfig?: any
   ): Promise<{
     success: boolean;
     team1?: any;
@@ -1724,8 +2741,8 @@ class DiscordBotManager {
     error?: string;
   }> {
     return this.withOperationLock(async () => {
-      const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
-      const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
+      const config = targetConfig || this.resolveTournamentContext(guild, null);
+      const teams = this.getTeamsForTournament(config);
 
       if (!config || !config.totalSlots || config.totalSlots <= 0) {
         return {
@@ -1791,7 +2808,8 @@ class DiscordBotManager {
         t2.group = groupForSlot1;
       }
 
-      teams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
+      const allTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+      allTeams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
       if (this.onConfigUpdated) {
         this.onConfigUpdated();
       }
@@ -1802,7 +2820,7 @@ class DiscordBotManager {
 
       this.logEvent(
         'info',
-        `Swapped Slot #${slot1} (${groupForSlot1}) and Slot #${slot2} (${groupForSlot2})`,
+        `Swapped Slot #${slot1} (${groupForSlot1}) and Slot #${slot2} (${groupForSlot2}) in "${config.title || 'Tournament'}"`,
         guild?.name
       );
 
@@ -1818,8 +2836,13 @@ class DiscordBotManager {
     });
   }
 
-  public generateRosterExport(format: 'csv' | 'markdown' = 'markdown', includeWaitlist: boolean = true): string {
-    const rawTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+  public generateRosterExport(
+    format: 'csv' | 'markdown' = 'markdown',
+    includeWaitlist: boolean = true,
+    targetConfig?: any
+  ): string {
+    const activeCfg = targetConfig || this.resolveTournamentContext(null, null);
+    const rawTeams = this.getTeamsForTournament(activeCfg);
     const sorted = [...rawTeams]
       .filter(t => includeWaitlist || !t.isWaitlist)
       .sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
@@ -2052,6 +3075,38 @@ class DiscordBotManager {
     this.status.guilds = guildsList;
   }
 
+  public async cleanOrphanChannels(): Promise<void> {
+    if (!this.client || !this.client.isReady()) return;
+    const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+
+    for (const [, guild] of this.client.guilds.cache) {
+      try {
+        await guild.channels.fetch().catch(() => {});
+        const category = this.resolveTournamentCategory(guild, rootConfig);
+
+        for (const [, ch] of guild.channels.cache) {
+          if (ch.isTextBased() && (ch.name === 'registration-details' || ch.name.includes('registration-details'))) {
+            if (!ch.parentId) {
+              if (category) {
+                await (ch as TextChannel).setParent(category.id, { lockPermissions: false }).catch(() => {});
+                this.logEvent('info', `Moved separate #${ch.name} under category "${category.name}" in "${guild.name}"`, guild.name);
+              } else {
+                await ch.delete('Deleting stray unparented registration-details channel').catch(() => {});
+                this.logEvent('info', `Deleted stray separate #${ch.name} in "${guild.name}"`, guild.name);
+                if (rootConfig && rootConfig.regDetailsChannelId === ch.id) {
+                  rootConfig.regDetailsChannelId = '';
+                  if (this.onConfigUpdated) this.onConfigUpdated();
+                }
+              }
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[DiscordBot] Orphan channel scan notice for "${guild.name}":`, err?.message || err);
+      }
+    }
+  }
+
   private setupListeners() {
     if (!this.client) return;
 
@@ -2102,30 +3157,14 @@ class DiscordBotManager {
       this.getStatus();
 
       await this.registerSlashCommands(false);
+      this.reconcileActiveTournaments();
+      await this.cleanOrphanChannels().catch(() => {});
 
-      const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
       this.client?.guilds.cache.forEach(guild => {
         guild.members.me?.setNickname('FFA-Manager').catch(() => {});
-        const regChannel = guild.channels.cache.find(
-          c => (c.name === config?.regChannel || c.name === '📝┃registration' || c.name === 'registration') && c.isTextBased()
-        );
-        if (regChannel) {
-          if (config) {
-            if (!config.totalSlots || config.totalSlots <= 0) {
-              config.regChannel = regChannel.name;
-              config.slotListChannel = '📊┃slot-list';
-              config.idpChannel = '🔑┃id-pass';
-              config.rulesChannel = '📋┃rules-format';
-              config.totalSlots = 20;
-              config.teamsPerGroup = 20;
-              config.groupsCount = 1;
-              config.title = config.title || `${guild.name} Championship`;
-            }
-            if (!config.explicitlyStoppedOrPaused) {
-              config.status = 'open';
-            }
-          }
-          this.logEvent('info', `Listening to #${regChannel.name} in "${guild.name}" as FFA-Manager`, guild.name);
+        const guildTourneys = this.getGuildTournaments(guild);
+        if (guildTourneys.length > 0) {
+          this.logEvent('info', `Connected to "${guild.name}" as FFA-Manager (${guildTourneys.length} active tournament(s)).`, guild.name);
         } else {
           this.logEvent('info', `Connected to "${guild.name}" as FFA-Manager. Ready for registrations. (Use /setup or !setup).`, guild.name);
         }
@@ -2153,6 +3192,72 @@ class DiscordBotManager {
       }, 2000);
     });
 
+    this.client.on('channelUpdate', (_oldChannel, newChannel: any) => {
+      try {
+        const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+        const guildId = newChannel?.guild?.id;
+        let updated = false;
+
+        if (rootConfig && newChannel?.id && newChannel?.name) {
+          const registry = this.ensureTournamentsRegistry(rootConfig);
+          const configsToCheck = [rootConfig, ...Object.values(registry)];
+          for (const cfg of configsToCheck) {
+            const gMap = guildId ? cfg.guildChannels?.[guildId] : undefined;
+            if (newChannel.id === cfg.categoryId || newChannel.id === gMap?.categoryId) {
+              cfg.categoryName = newChannel.name;
+              updated = true;
+            }
+            if (newChannel.id === cfg.rulesChannelId || newChannel.id === gMap?.rulesChannelId) {
+              cfg.rulesChannel = newChannel.name;
+              updated = true;
+            }
+            if (newChannel.id === cfg.regChannelId || newChannel.id === gMap?.regChannelId) {
+              cfg.regChannel = newChannel.name;
+              updated = true;
+            }
+            if (newChannel.id === cfg.slotListChannelId || newChannel.id === gMap?.slotListChannelId) {
+              cfg.slotListChannel = newChannel.name;
+              updated = true;
+            }
+            if (newChannel.id === cfg.regDetailsChannelId || newChannel.id === gMap?.regDetailsChannelId) {
+              cfg.regDetailsChannel = newChannel.name;
+              updated = true;
+            }
+            if (newChannel.id === cfg.idpChannelId || newChannel.id === gMap?.idpChannelId) {
+              cfg.idpChannel = newChannel.name;
+              updated = true;
+            }
+          }
+        }
+
+        const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+        for (const t of teams) {
+          if (t.teamCategoryId && t.teamCategoryId === newChannel?.id && newChannel?.name) {
+            t.teamCategoryName = newChannel.name;
+            updated = true;
+          }
+          if (t.teamVoiceChannelId && t.teamVoiceChannelId === newChannel?.id && newChannel?.name) {
+            t.teamVoiceChannelName = newChannel.name;
+            updated = true;
+          }
+        }
+
+        if (updated && this.onConfigUpdated) {
+          this.onConfigUpdated();
+        }
+        this.refreshGuilds();
+      } catch {
+      }
+    });
+
+    this.client.on('channelDelete', () => {
+      try {
+        this.reconcileActiveTournaments();
+        this.refreshGuilds();
+      } catch {
+      }
+    });
+
     this.client.on('guildCreate', async (guild) => {
       guild.members.me?.setNickname('FFA-Manager').catch(() => {});
       this.logEvent('info', `Bot joined new server: "${guild.name}" (${guild.memberCount} members). Run /setup or /create to launch a tournament.`, guild.name);
@@ -2167,14 +3272,25 @@ class DiscordBotManager {
 
     this.client.on('interactionCreate', async (interaction) => {
       try {
+        if (interaction.isAutocomplete()) {
+          await interaction.respond([]).catch(() => {});
+          return;
+        }
+
         if (interaction.isChatInputCommand()) {
           await this.handleInteraction(interaction);
           return;
         }
 
         if (interaction.isButton()) {
-          if (interaction.customId === 'register_team_panel_btn') {
-            const cfg = this.getTournamentConfig ? this.getTournamentConfig() : null;
+          if (
+            interaction.customId === 'register_team_panel_btn' ||
+            interaction.customId.startsWith('register_team_panel_btn:')
+          ) {
+            const btnTourneyId = interaction.customId.includes(':')
+              ? interaction.customId.split(':')[1]
+              : undefined;
+            const cfg = this.resolveTournamentContext(interaction.guild, interaction.channelId, btnTourneyId);
             if (!cfg) {
               await interaction.reply({
                 content: '❌ Tournament configuration is not ready yet.',
@@ -2190,16 +3306,9 @@ class DiscordBotManager {
             if (!cfg.explicitlyStoppedOrPaused && cfg.status !== 'open') {
               cfg.status = 'open';
             }
-            if (cfg.status === 'paused' && cfg.explicitlyStoppedOrPaused) {
-              await interaction.reply({
-                content: `⏸️ Registrations for **${cfg.title || 'this tournament'}** are currently **PAUSED** by tournament staff.`,
-                ephemeral: true
-              });
-              return;
-            }
             if (cfg.status === 'closed' && cfg.explicitlyStoppedOrPaused) {
               await interaction.reply({
-                content: `🔴 Registrations for **${cfg.title || 'this tournament'}** are currently **CLOSED**. Please wait for tournament staff to run \`/start-registration\`.`,
+                content: `🔴 Registrations for **${cfg.title || 'this tournament'}** have been **STOPPED** by tournament staff.`,
                 ephemeral: true
               });
               return;
@@ -2209,8 +3318,14 @@ class DiscordBotManager {
             return;
           }
 
-          if (interaction.customId === 'reg_open_modal_btn') {
-            const cfg = this.getTournamentConfig ? this.getTournamentConfig() : null;
+          if (
+            interaction.customId === 'reg_open_modal_btn' ||
+            interaction.customId.startsWith('reg_open_modal_btn:')
+          ) {
+            const btnTourneyId = interaction.customId.includes(':')
+              ? interaction.customId.split(':')[1]
+              : undefined;
+            const cfg = this.resolveTournamentContext(interaction.guild, interaction.channelId, btnTourneyId);
             const draft = this.pendingRegistrationDrafts.get(interaction.user.id);
             const selectedRegion = draft?.region || 'India';
             const preselectedPlayers = draft?.playerIds || [];
@@ -2218,7 +3333,10 @@ class DiscordBotManager {
             return;
           }
 
-          if (interaction.customId === 'open_rules_modal') {
+          if (
+            interaction.customId === 'open_rules_modal' ||
+            interaction.customId.startsWith('open_rules_modal:')
+          ) {
             const isStaff = this.hasBotManagerRole(interaction.member, interaction.guild, false);
             if (!isStaff) {
               await interaction.reply({
@@ -2227,8 +3345,11 @@ class DiscordBotManager {
               });
               return;
             }
-            const cfg = this.getTournamentConfig ? this.getTournamentConfig() : null;
-            await interaction.showModal(this.createRulesModal(cfg?.customRules));
+            const btnTourneyId = interaction.customId.includes(':')
+              ? interaction.customId.split(':')[1]
+              : undefined;
+            const cfg = this.resolveTournamentContext(interaction.guild, interaction.channelId, btnTourneyId);
+            await interaction.showModal(this.createRulesModal(cfg?.customRules, cfg?.id));
             return;
           }
 
@@ -2241,47 +3362,54 @@ class DiscordBotManager {
               });
               return;
             }
-            const deleteChannels = interaction.customId.endsWith(':1');
+            const parts = interaction.customId.split(':');
+            const deleteChannels = parts[1] === '1';
+            const targetTourneyId = parts[2] || undefined;
+            const targetConfig = this.resolveTournamentContext(interaction.guild, interaction.channelId, targetTourneyId);
             await interaction.update({
               content: '⏳ **Deleting tournament category, voice channels, roles, channels, and resetting rosters...**',
               embeds: [],
               components: []
             });
-            const result = await this.deleteTournament(interaction.guild || undefined, deleteChannels);
+            const result = await this.deleteTournament(interaction.guild || undefined, deleteChannels, targetConfig);
             const embed = new EmbedBuilder()
-              .setTitle('🗑️ Tournament Deleted & All Tournament Assets Removed')
+              .setTitle(`${EMOJI.alert} Tournament Deleted & All Tournament Assets Removed`)
               .setColor(0xED4245)
-              .setDescription(`The active tournament has been deleted by <@${interaction.user.id}>. All categories, voice channels, text channels, and team roles have been removed from **${interaction.guild?.name || 'the server'}**.`)
+              .setDescription(
+                `${EMOJI.dividerBar}\n` +
+                `The tournament **${targetConfig?.title || 'Tournament'}** has been deleted by <@${interaction.user.id}>. Its category, voice channels, text channels, and roles have been removed from **${interaction.guild?.name || 'the server'}**.\n` +
+                `${EMOJI.dividerBar}`
+              )
               .addFields(
                 {
-                  name: '📁 Deleted Categories',
+                  name: `${EMOJI.golden} Deleted Categories`,
                   value: result.deletedCategories.length > 0 ? result.deletedCategories.slice(0, 10).join('\n') + (result.deletedCategories.length > 10 ? `\n...and ${result.deletedCategories.length - 10} more` : '') : '*(None)*',
                   inline: true
                 },
                 {
-                  name: '🔊 Deleted Voice Channels',
+                  name: `${EMOJI.sword} Deleted Voice Channels`,
                   value: result.deletedVoiceChannels.length > 0 ? result.deletedVoiceChannels.slice(0, 10).join('\n') + (result.deletedVoiceChannels.length > 10 ? `\n...and ${result.deletedVoiceChannels.length - 10} more` : '') : '*(None)*',
                   inline: true
                 },
                 {
-                  name: '🏷️ Deleted Roles',
+                  name: `${EMOJI.admin} Deleted Roles`,
                   value: result.deletedRoles.length > 0 ? result.deletedRoles.slice(0, 10).join('\n') + (result.deletedRoles.length > 10 ? `\n...and ${result.deletedRoles.length - 10} more` : '') : '*(None)*',
                   inline: true
                 },
                 {
-                  name: '💬 Deleted Text Channels',
+                  name: `${EMOJI.golden} Deleted Text Channels`,
                   value: result.deletedTextChannels.length > 0 ? result.deletedTextChannels.join('\n') : '*(None)*',
                   inline: false
                 },
                 {
-                  name: '👥 Cleared Rosters & Slots',
+                  name: `${EMOJI.done} Cleared Rosters & Slots`,
                   value: `\`${result.clearedTeamsCount} Team(s) cleared\` • Tournament status set to CLOSED`,
                   inline: false
                 }
               )
               .setFooter({ text: 'FFA | Glacier Cup Manager™ • Run /setup to launch a new tournament' })
               .setTimestamp();
-            await interaction.editReply({ content: null, embeds: [embed], components: [] });
+            await interaction.editReply({ content: null, embeds: [embed], components: [] }).catch(() => {});
             return;
           }
 
@@ -2301,10 +3429,201 @@ class DiscordBotManager {
             });
             return;
           }
+
+          if (interaction.customId.startsWith('captain_edit_roster:')) {
+            const parts = interaction.customId.split(':');
+            const teamId = parts[1];
+            const btnTourneyId = parts[2] || undefined;
+            const cfg = this.resolveTournamentContext(interaction.guild, interaction.channelId, btnTourneyId);
+            const allTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+            const team = allTeams.find(t => t.id === teamId) || this.findUserTeamInTournament(interaction.user.id, cfg);
+            if (!team) {
+              await interaction.reply({
+                content: '❌ **Team Not Found:** Your team slot could not be located (it may have already been cancelled).',
+                ephemeral: true
+              });
+              return;
+            }
+            const isStaff = this.hasBotManagerRole(interaction.member, interaction.guild, false);
+            const isCaptain = this.normalizeMemberId(team.captain?.id) === this.normalizeMemberId(interaction.user.id);
+            if (!isCaptain && !isStaff) {
+              await interaction.reply({
+                content: `❌ **Captain Only:** Only the registered Team Captain (<@${team.captain?.id}>) can edit the roster for **${team.teamName}**.`,
+                ephemeral: true
+              });
+              return;
+            }
+            const isOpen = cfg && cfg.status === 'open' && !cfg.explicitlyStoppedOrPaused;
+            if (!isOpen && !isStaff) {
+              await interaction.reply({
+                content: '🔒 **Registration Locked:** Self-service roster editing is only available while tournament registration is **OPEN**.',
+                ephemeral: true
+              });
+              return;
+            }
+            await interaction.showModal(this.createCaptainEditRosterModal(team, cfg));
+            return;
+          }
+
+          if (interaction.customId.startsWith('captain_cancel_slot:')) {
+            const parts = interaction.customId.split(':');
+            const teamId = parts[1];
+            const btnTourneyId = parts[2] || undefined;
+            const cfg = this.resolveTournamentContext(interaction.guild, interaction.channelId, btnTourneyId);
+            const allTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+            const team = allTeams.find(t => t.id === teamId) || this.findUserTeamInTournament(interaction.user.id, cfg);
+            if (!team) {
+              await interaction.reply({
+                content: '❌ **Team Not Found:** Your team slot could not be located (it may have already been cancelled).',
+                ephemeral: true
+              });
+              return;
+            }
+            const isStaff = this.hasBotManagerRole(interaction.member, interaction.guild, false);
+            const isCaptain = this.normalizeMemberId(team.captain?.id) === this.normalizeMemberId(interaction.user.id);
+            if (!isCaptain && !isStaff) {
+              await interaction.reply({
+                content: `❌ **Captain Only:** Only the registered Team Captain (<@${team.captain?.id}>) can withdraw or cancel the slot for **${team.teamName}**.`,
+                ephemeral: true
+              });
+              return;
+            }
+            const isOpen = cfg && cfg.status === 'open' && !cfg.explicitlyStoppedOrPaused;
+            if (!isOpen && !isStaff) {
+              await interaction.reply({
+                content: '🔒 **Registration Locked:** Self-service slot cancellation is only available while tournament registration is **OPEN**.',
+                ephemeral: true
+              });
+              return;
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+            const delRes = await this.deleteSlot(
+              team.slotNumber,
+              interaction.guild || undefined,
+              { teamId: team.id, isWaitlist: team.isWaitlist, tournamentId: cfg?.id },
+              cfg
+            );
+
+            if (!delRes.success || !delRes.deletedTeam) {
+              await interaction.editReply(`❌ **Failed to cancel slot:** ${delRes.error || 'Could not remove slot.'}`);
+              return;
+            }
+
+            const cancelEmbed = new EmbedBuilder()
+              .setTitle(`${EMOJI.alert} Team Slot Cancelled & Withdrawn`)
+              .setColor(0xED4245)
+              .setDescription(
+                `${EMOJI.dividerBar}\n` +
+                `${EMOJI.done} Your team **${delRes.deletedTeam.teamName}** (${delRes.deletedTeam.isWaitlist ? `Waitlist #${delRes.deletedTeam.slotNumber}` : `Slot #${delRes.deletedTeam.slotNumber}`}) has been withdrawn from **${cfg?.title || 'the tournament'}**.\n` +
+                `${EMOJI.dividerBar}`
+              )
+              .addFields({
+                name: `${EMOJI.golden} Automatic Waitlist Promotion`,
+                value: delRes.promotedTeam
+                  ? `${EMOJI.giveaway} **${delRes.promotedTeam.teamName}** was automatically promoted from the waitlist into confirmed **Slot #${delRes.promotedTeam.slotNumber}** (${delRes.promotedTeam.group || 'Group A'})!`
+                  : 'ℹ️ No waitlist teams were queued for promotion.',
+                inline: false
+              })
+              .setFooter({ text: 'FFA | Glacier Cup Manager™ • Self-Service Captain Controls' })
+              .setTimestamp();
+
+            await interaction.editReply({ embeds: [cancelEmbed] });
+            return;
+          }
+
+          if (
+            interaction.customId === 'setup_preset_squad_20' ||
+            interaction.customId === 'setup_preset_2grp_32' ||
+            interaction.customId === 'setup_preset_4grp_48' ||
+            interaction.customId === 'setup_preset_duo_24'
+          ) {
+            if (interaction.replied || interaction.deferred) return;
+            const isStaff = this.hasBotManagerRole(interaction.member, interaction.guild, true);
+            if (!isStaff) {
+              await interaction.reply({
+                content: '❌ Only members with the **@FFA Bot Manager** role can use tournament setup presets.',
+                ephemeral: true
+              }).catch(() => {});
+              return;
+            }
+
+            let chosenSlots = 20;
+            let chosenTags = 4;
+            let chosenGroups = 1;
+            let chosenTitle = 'Glacier Cup Squads';
+
+            if (interaction.customId === 'setup_preset_squad_20') {
+              chosenSlots = 20;
+              chosenTags = 4;
+              chosenGroups = 1;
+              chosenTitle = 'Glacier Cup Squads';
+            } else if (interaction.customId === 'setup_preset_2grp_32') {
+              chosenSlots = 32;
+              chosenTags = 4;
+              chosenGroups = 2;
+              chosenTitle = 'Elite Scrims — 2 Groups';
+            } else if (interaction.customId === 'setup_preset_4grp_48') {
+              chosenSlots = 48;
+              chosenTags = 4;
+              chosenGroups = 4;
+              chosenTitle = 'Championship Series — 4 Groups';
+            } else if (interaction.customId === 'setup_preset_duo_24') {
+              chosenSlots = 24;
+              chosenTags = 2;
+              chosenGroups = 1;
+              chosenTitle = 'Duo Scrims';
+            }
+
+            await interaction.update({
+              content: '⏳ **Validating permissions & creating Tournament Category, Channels & `@FFA Bot Manager` Role...**',
+              embeds: [],
+              components: []
+            }).catch(() => {});
+
+            if (!interaction.guild) {
+              await interaction.editReply('❌ This command can only be used in a server.').catch(() => {});
+              return;
+            }
+
+            const res = await this.createTournament(interaction.guild, {
+              slots: chosenSlots,
+              tags: chosenTags,
+              groups: chosenGroups,
+              title: chosenTitle,
+              createdBy: interaction.user.tag,
+              createdByUserId: interaction.user.id
+            });
+
+            if (res.success) {
+              const doneEmbed = new EmbedBuilder()
+                .setTitle(`${EMOJI.giveaway} Tournament Auto-Created!`)
+                .setColor(res.warnings && res.warnings.length > 0 ? 0xFEE75C : 0x57F287)
+                .setDescription(
+                  `${EMOJI.dividerBar}\n` +
+                  `${EMOJI.done} **${chosenTitle}** is ready in **${interaction.guild?.name}**!\n` +
+                  `${EMOJI.dividerBar}`
+                )
+                .addFields(
+                  { name: `${EMOJI.golden} Configuration`, value: `\`${chosenSlots} Slots\` • \`${chosenTags} Tags/Team\` • \`${chosenGroups} Group(s)\``, inline: false },
+                  { name: `${EMOJI.admin} Created Channels & Role`, value: res.created.join('\n') || 'Channels ready', inline: false }
+                )
+                .setFooter({ text: 'Teams registering will be granted @Verified Team' });
+
+              await interaction.editReply({ content: null, embeds: [doneEmbed], components: [] }).catch(() => {});
+            } else {
+              await interaction.editReply({ content: `❌ Failed to create tournament: ${res.error}`, embeds: [], components: [] }).catch(() => {});
+            }
+            return;
+          }
         }
 
-        if (interaction.isStringSelectMenu() && interaction.customId === 'reg_region_select') {
-          const cfg = this.getTournamentConfig ? this.getTournamentConfig() : null;
+        if (
+          interaction.isStringSelectMenu() &&
+          (interaction.customId === 'reg_region_select' || interaction.customId.startsWith('reg_region_select:'))
+        ) {
+          const menuTourneyId = interaction.customId.includes(':') ? interaction.customId.split(':')[1] : undefined;
+          const cfg = this.resolveTournamentContext(interaction.guild, interaction.channelId, menuTourneyId);
           const rawVal = interaction.values[0];
           const chosenRegion: 'India' | 'Bangladesh' | 'Pakistan' =
             rawVal === 'Bangladesh' ? 'Bangladesh' : rawVal === 'Pakistan' ? 'Pakistan' : 'India';
@@ -2312,8 +3631,12 @@ class DiscordBotManager {
           return;
         }
 
-        if (interaction.isUserSelectMenu() && interaction.customId === 'reg_players_select') {
-          const cfg = this.getTournamentConfig ? this.getTournamentConfig() : null;
+        if (
+          interaction.isUserSelectMenu() &&
+          (interaction.customId === 'reg_players_select' || interaction.customId.startsWith('reg_players_select:'))
+        ) {
+          const menuTourneyId = interaction.customId.includes(':') ? interaction.customId.split(':')[1] : undefined;
+          const cfg = this.resolveTournamentContext(interaction.guild, interaction.channelId, menuTourneyId);
           await interaction.showModal(this.createTeamRegistrationModal(cfg, 'India', interaction.values));
           return;
         }
@@ -2322,16 +3645,21 @@ class DiscordBotManager {
           interaction.isModalSubmit() &&
           (interaction.customId === 'submit_team_reg_modal' || interaction.customId.startsWith('submit_team_reg_modal:'))
         ) {
-          const cfg = this.getTournamentConfig ? this.getTournamentConfig() : null;
+          const parts = interaction.customId.split(':');
+          const modalTourneyId = parts.length >= 3 ? parts.slice(2).join(':') : undefined;
+          const cfg = this.resolveTournamentContext(interaction.guild, interaction.channelId, modalTourneyId);
           if (!cfg) {
             await interaction.reply({ content: '❌ Tournament configuration not loaded.', ephemeral: true });
             return;
           }
-          await this.withOperationLock(() => this.handleModalRegistration(interaction, cfg));
+          await this.handleModalRegistration(interaction, cfg);
           return;
         }
 
-        if (interaction.isModalSubmit() && interaction.customId === 'submit_rules_modal') {
+        if (
+          interaction.isModalSubmit() &&
+          (interaction.customId === 'submit_rules_modal' || interaction.customId.startsWith('submit_rules_modal:'))
+        ) {
           if (!interaction.guild) {
             await interaction.reply({ content: '❌ This can only be used inside a server.', ephemeral: true });
             return;
@@ -2346,20 +3674,77 @@ class DiscordBotManager {
           }
           await interaction.deferReply({ ephemeral: false });
           const rulesText = interaction.fields.getTextInputValue('rules_text').trim();
+          const modalTourneyId = interaction.customId.includes(':') ? interaction.customId.split(':')[1] : undefined;
+          const pending = this.pendingRulesPrompts.get(`${interaction.guild.id}:${interaction.user.id}`);
           this.pendingRulesPrompts.delete(`${interaction.guild.id}:${interaction.user.id}`);
+          const targetConfig = this.resolveTournamentContext(
+            interaction.guild,
+            interaction.channelId,
+            modalTourneyId || pending?.tournamentId
+          );
 
-          const pubRes = await this.publishRulesToChannel(interaction.guild, rulesText, interaction.user.username);
+          const pubRes = await this.publishRulesToChannel(interaction.guild, rulesText, interaction.user.username, targetConfig);
           if (pubRes.success) {
             const confirmEmbed = new EmbedBuilder()
-              .setTitle('✅ Tournament Rules Published!')
+              .setTitle(`${EMOJI.done} Tournament Rules Published!`)
               .setColor(0x57F287)
-              .setDescription(`Your custom tournament rules & format have been posted in <#${pubRes.channelId}>!`)
+              .setDescription(
+                `${EMOJI.dividerBar}\n` +
+                `${EMOJI.golden} Your custom tournament rules & format for **${targetConfig?.title || 'Tournament'}** have been posted in <#${pubRes.channelId}>!\n` +
+                `${EMOJI.dividerBar}`
+              )
               .setFooter({ text: `Published by @${interaction.user.username} • FFA-Manager` })
               .setTimestamp();
             await interaction.editReply({ embeds: [confirmEmbed] });
           } else {
             await interaction.editReply(`❌ Failed to publish rules: ${pubRes.error}`);
           }
+          return;
+        }
+
+        if (
+          interaction.isModalSubmit() &&
+          interaction.customId.startsWith('submit_captain_edit_roster:')
+        ) {
+          const parts = interaction.customId.split(':');
+          const teamId = parts[1];
+          const modalTourneyId = parts[2] || undefined;
+          const cfg = this.resolveTournamentContext(interaction.guild, interaction.channelId, modalTourneyId);
+          const allTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+          const team = allTeams.find(t => t.id === teamId) || this.findUserTeamInTournament(interaction.user.id, cfg);
+          if (!team || !cfg) {
+            await interaction.reply({
+              content: '❌ **Team or Tournament Not Found:** Could not locate your registered team.',
+              ephemeral: true
+            });
+            return;
+          }
+          const isStaff = this.hasBotManagerRole(interaction.member, interaction.guild, false);
+          const isCaptain = this.normalizeMemberId(team.captain?.id) === this.normalizeMemberId(interaction.user.id);
+          if (!isCaptain && !isStaff) {
+            await interaction.reply({
+              content: `❌ **Captain Only:** Only the registered Team Captain (<@${team.captain?.id}>) can edit this roster.`,
+              ephemeral: true
+            });
+            return;
+          }
+          const isOpen = cfg.status === 'open' && !cfg.explicitlyStoppedOrPaused;
+          if (!isOpen && !isStaff) {
+            await interaction.reply({
+              content: '🔒 **Registration Locked:** Self-service roster edits are only permitted while registration is **OPEN**.',
+              ephemeral: true
+            });
+            return;
+          }
+          await this.handleCaptainEditRosterModal(interaction, team, cfg);
+          return;
+        }
+
+        if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+          await interaction.reply({
+            content: '⚠️ This action or interaction is no longer active. Please run the command again.',
+            ephemeral: true
+          }).catch(() => {});
         }
       } catch (err: any) {
         console.log('[DiscordBot] Interaction handling notice:', err?.message || err);
@@ -2381,7 +3766,7 @@ class DiscordBotManager {
       try {
         if (message.author.bot) return;
 
-        const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
+        const config = this.resolveTournamentContext(message.guild, message.channel.id);
         if (!config) return;
 
         const channelName = (message.channel as TextChannel).name;
@@ -2392,12 +3777,17 @@ class DiscordBotManager {
           const pending = this.pendingRulesPrompts.get(promptKey);
           if (pending && pending.channelId === message.channel.id && Date.now() < pending.expiresAt) {
             this.pendingRulesPrompts.delete(promptKey);
-            const pubRes = await this.publishRulesToChannel(message.guild, content, message.author.username);
+            const targetCfg = this.resolveTournamentContext(message.guild, message.channel.id, pending.tournamentId);
+            const pubRes = await this.publishRulesToChannel(message.guild, content, message.author.username, targetCfg);
             if (pubRes.success) {
               const confirmEmbed = new EmbedBuilder()
-                .setTitle('✅ Tournament Rules Published!')
+                .setTitle(`${EMOJI.done} Tournament Rules Published!`)
                 .setColor(0x57F287)
-                .setDescription(`Your custom tournament rules & format have been posted in <#${pubRes.channelId}>!`)
+                .setDescription(
+                  `${EMOJI.dividerBar}\n` +
+                  `${EMOJI.golden} Your custom tournament rules & format for **${targetCfg?.title || 'Tournament'}** have been posted in <#${pubRes.channelId}>!\n` +
+                  `${EMOJI.dividerBar}`
+                )
                 .setFooter({ text: `Published by @${message.author.username} • FFA-Manager` })
                 .setTimestamp();
               await message.reply({ embeds: [confirmEmbed] }).catch(() => {});
@@ -2413,13 +3803,21 @@ class DiscordBotManager {
           return;
         }
 
-        if (
-          channelName === config.regChannel ||
-          message.channel.id === config.regChannel ||
-          channelName === '📝┃registration' ||
-          channelName === 'registration'
-        ) {
-          await this.withOperationLock(() => this.handleRegistration(message, config));
+        const resolvedRegCh = message.guild ? this.resolveRegistrationChannel(message.guild, config) : undefined;
+        const isRegChannelById =
+          (resolvedRegCh && message.channel.id === resolvedRegCh.id) ||
+          (config.regChannelId && message.channel.id === config.regChannelId);
+        const isRegChannelByNameFallback =
+          !config.regChannelId &&
+          !resolvedRegCh &&
+          (message.channel.id === config.regChannel ||
+            channelName === config.regChannel ||
+            channelName === 'tournament-registration' ||
+            channelName === '📝┃registration' ||
+            channelName === 'registration');
+
+        if (isRegChannelById || isRegChannelByNameFallback) {
+          await this.handleRegistration(message, config);
         }
       } catch (err: any) {
         this.logEvent('info', `Message handler notice: ${err?.message || err}`);
@@ -2433,35 +3831,56 @@ class DiscordBotManager {
     const isSetupCmd = cmd === 'setup' || cmd === 'create' || (cmd === 'tourney' && args[0] === 'setup');
     const isStaff = this.hasBotManagerRole(message.member, message.guild, isSetupCmd);
 
-    if (cmd !== 'slots' && !isStaff) {
+    if (
+      cmd !== 'slots' &&
+      cmd !== 'active-tournament' &&
+      cmd !== 'activetournament' &&
+      cmd !== 'my-team' &&
+      cmd !== 'myteam' &&
+      !isStaff
+    ) {
       return message.reply(
-        `❌ **Access Restricted:** Only members with the **@${config?.managerRoleName || 'FFA Bot Manager'}** role can use bot commands. Normal members can only register their team in \`#${config?.regChannel || '📝┃registration'}\` and check the slot list (\`!slots\` or \`#${config?.slotListChannel || '📊┃slot-list'}\`).`
+        `❌ **Access Restricted:** Only members with the **@${config?.managerRoleName || 'FFA Bot Manager'}** role can use staff bot commands. Players can register in \`#${config?.regChannel || 'tournament-registration'}\`, manage their team with \`/my-team\`, and check slots with \`!slots\` or \`/active-tournament\`.`
       );
+    }
+
+    if (cmd === 'my-team' || cmd === 'myteam') {
+      const payload = await this.buildMyTeamPayload(message.guild, message.author.id, config);
+      return message.reply({ embeds: payload.embeds, components: payload.components });
+    }
+
+    if (cmd === 'active-tournament' || cmd === 'activetournament') {
+      const activeEmbed = this.buildActiveTournamentEmbed(message.guild, message.channel.id);
+      return message.reply({ embeds: [activeEmbed] });
     }
 
     if (cmd === 'help' || cmd === 'commands') {
       const helpEmbed = new EmbedBuilder()
-        .setTitle('🤖 FFA | Glacier Cup Manager™ — Full Command Suite')
+        .setTitle(`${EMOJI.giveaway} FFA | Glacier Cup Manager™ — Full Command Suite`)
         .setColor(0x5865F2)
-        .setDescription('Official FFA | Glacier Cup Manager™ Tagcheck Tournament Bot for Discord. Supports both **Slash Commands** (`/`) and prefix commands (`!`).')
+        .setDescription(
+          `${EMOJI.dividerBar}\n` +
+          `Official FFA | Glacier Cup Manager™ Tagcheck Tournament Bot for Discord. Supports both **Slash Commands** (\`/\`) and prefix commands (\`!\`).\n` +
+          `${EMOJI.dividerBar}`
+        )
         .addFields(
           {
-            name: '🏆 Tournament Setup & Channels',
-            value: '`/setup [slots] [tags] [groups] [title]` — Auto-create category, channels & `@FFA Bot Manager` + `@Verified Team` roles (up to 500 slots; `groups` = teams per group; registration stays closed)\n`/start-registration` — Start registration & unlock `#registration`\n`/pause-registration [reason]` — Pause registration & temporarily lock `#registration`\n`/stop-registration [reason]` — End registration & lock `#registration`\n`/delete slot <slot>` — Remove team & promote waitlist\n`/delete tournament` — Preview & delete tournament',
+            name: `${EMOJI.giveaway} Tournament Setup & Channels`,
+            value: '`/setup [slots] [tags] [groups] [title]` — Auto-create category, channels & `@FFA Bot Manager` + `@Verified Team` roles and start registration immediately (up to 500 slots; `groups` = teams per group)\n`/active-tournament` — Check if any tournament is currently active in the server\n`/stop-registration [reason]` — Stop registration & lock `#tournament-registration`\n`/delete slot <slot>` — Remove team & promote waitlist\n`/delete tournament` — Preview & delete tournament',
             inline: false
           },
           {
-            name: '🔑 Lobby & Registration Control',
-            value: '`/idpass <room_id> <pass> [map] [time]` — Broadcast private Room ID & Pass to `#id-pass`\n`/start-registration` • `/pause-registration` • `/stop-registration` — Open, pause, or close `#registration`\n`/swap-slots <slot1> <slot2>` — Swap two teams\' slot numbers & groups\n`/announce <message>` — Send official tournament announcement',
+            name: `${EMOJI.golden} Lobby & Registration Control`,
+            value: '`/idpass <room_id> <pass> [map] [time]` — Broadcast Room ID & Pass to `#tournament-idp`\n`/stop-registration` — End registration & lock `#tournament-registration`\n`/swap-slots <slot1> <slot2>` — Swap two teams\' slot numbers & groups\n`/announce <message>` — Send official tournament announcement',
             inline: false
           },
           {
-            name: '🛡️ Verification, Roster & Standings',
-            value: '`/tagcheck <@user>` — Inspect if a player is already registered or banned\n`/team-info <slot_or_name>` — Full dossier for any registered team\n`/blacklist add|remove|list` — Ban/unban players from registering\n`/standings [group]` — View tournament points table\n`/rules` — Display official tournament rulebook\n`/export [format]` — Export clean roster list (Markdown / CSV)',
+            name: `${EMOJI.admin} Verification, Roster & Standings`,
+            value: '`/my-team` — Captain self-service: view your team, edit roster tags, or cancel your slot\n`/tagcheck <@user>` — Inspect if a player is already registered or banned\n`/team-info <slot_or_name>` — Full dossier for any registered team\n`/blacklist add|remove|list` — Ban/unban players from registering\n`/standings [group]` — View tournament points table\n`/rules` — Display official tournament rulebook\n`/export [format]` — Export clean roster list (Markdown / CSV)',
             inline: false
           },
           {
-            name: '📝 Registration Format',
+            name: `${EMOJI.sword} Registration Format`,
             value: '```text\nTeam Name: <Team Name>\nPlayer 1: @Tag1\nPlayer 2: @Tag2\nPlayer 3: @Tag3\nPlayer 4: @Tag4\n```',
             inline: false
           }
@@ -2489,7 +3908,11 @@ class DiscordBotManager {
         const tags = Math.max(1, Math.min(10, rawTags));
         const teamsPerGroup = !isNaN(rawTeamsPerGroup) && rawTeamsPerGroup > 0 ? Math.min(slots, rawTeamsPerGroup) : slots;
         const groupsCount = Math.max(1, Math.ceil(slots / teamsPerGroup));
-        const title = subArgs.slice(3).join(' ').trim() || `${config.game || 'Tournament'} Championship`;
+        const existingGuildTourneys = this.getGuildTournaments(message.guild);
+        const defaultTourneyTitle = existingGuildTourneys.length > 0
+          ? `${message.guild.name} Championship #${existingGuildTourneys.length + 1}`
+          : `${message.guild.name} Championship`;
+        const title = subArgs.slice(3).join(' ').trim() || defaultTourneyTitle;
 
         const setupWaitMsg = await message.reply('⏳ **Validating permissions and generating tournament category, channels, and `@FFA Bot Manager` + `@Verified Team` roles...**');
         const result = await this.createTournament(message.guild, {
@@ -2505,21 +3928,27 @@ class DiscordBotManager {
           this.pendingRulesPrompts.set(`${message.guild.id}:${message.author.id}`, {
             guildId: message.guild.id,
             channelId: message.channel.id,
+            tournamentId: result.tournamentId,
             expiresAt: Date.now() + 10 * 60 * 1000
           });
 
           const successEmbed = new EmbedBuilder()
-            .setTitle('🏆 Tournament Setup Complete — Registration Open')
+            .setTitle(`${EMOJI.giveaway} Tournament Setup Complete — Registration Open`)
             .setColor(result.warnings && result.warnings.length > 0 ? 0xFEE75C : 0x57F287)
-            .setDescription(`**${title}** has been provisioned in **${message.guild.name}**! Registration is **OPEN** and the registration panel is active in \`#📝┃registration\`.`)
+            .setDescription(
+              `${EMOJI.dividerBar}\n` +
+              `${EMOJI.done} **${title}** has been provisioned in **${message.guild.name}**!\n` +
+              `Registration is **OPEN** and the registration panel is active in \`#tournament-registration\`.\n` +
+              `${EMOJI.dividerBar}`
+            )
             .addFields(
-              { name: 'Slots & Tags', value: `\`${slots} Slots\` • \`${tags} Tags/Team\``, inline: true },
-              { name: 'Group Allocation', value: `\`${teamsPerGroup} Teams/Group\` (\`${groupsCount} Group(s)\`)`, inline: true },
-              { name: 'Registration Status', value: '🟢 `OPEN (Registration Active)`', inline: true },
-              { name: 'Created Category & Channels', value: result.created.join('\n') || 'All channels active', inline: false },
+              { name: `${EMOJI.sword} Slots & Tags`, value: `\`${slots} Slots\` • \`${tags} Tags/Team\``, inline: true },
+              { name: `${EMOJI.golden} Group Allocation`, value: `\`${teamsPerGroup} Teams/Group\` (\`${groupsCount} Group(s)\`)`, inline: true },
+              { name: `${EMOJI.done} Registration Status`, value: '`OPEN (Registration Active)`', inline: true },
+              { name: `${EMOJI.admin} Created Category & Channels`, value: result.created.join('\n') || 'All channels active', inline: false },
               {
-                name: '▶️ Registration Control Commands',
-                value: '• Registration continues indefinitely until you pause or stop it.\n• Run **`/pause-registration`** to pause or **`/stop-registration`** to end registration.',
+                name: `${EMOJI.golden} Registration Control`,
+                value: `${EMOJI.done} Registration has started automatically and will continue until you run **\`/stop-registration\`**.`,
                 inline: false
               }
             )
@@ -2528,22 +3957,22 @@ class DiscordBotManager {
 
           if (result.warnings && result.warnings.length > 0) {
             successEmbed.addFields({
-              name: '⚠️ Partial Setup Warnings',
+              name: `${EMOJI.alert} Partial Setup Warnings`,
               value: result.warnings.join('\n'),
               inline: false
             });
           }
 
           successEmbed.addFields({
-            name: '📜 Next Step — Provide Tournament Rules',
-            value: 'Please **reply with your Tournament Rules & Format** in this channel (or click the button below / use `/rules`) and I will publish them to `#📋┃rules-format`!',
+            name: `${EMOJI.admin} Next Step — Provide Tournament Rules`,
+            value: 'Please **reply with your Tournament Rules & Format** in this channel (or click the button below / use `/rules`) and I will publish them to `#tournament-rules`!',
             inline: false
           });
 
           return setupWaitMsg.edit({
-            content: '✅ **Tournament Setup Complete! Registration is now OPEN in `#📝┃registration`:**',
+            content: `${EMOJI.done} **Tournament Setup Complete! Registration is now OPEN in \`#tournament-registration\`:**`,
             embeds: [successEmbed],
-            components: [this.createRulesButtonRow()]
+            components: [this.createRulesButtonRow(result.tournamentId)]
           });
         } else {
           const rollbackNote = result.rolledBack && result.rolledBack.length > 0
@@ -2554,42 +3983,44 @@ class DiscordBotManager {
       }
 
       const wizardEmbed = new EmbedBuilder()
-        .setTitle('🏆 Tournament Setup & Auto-Generation Wizard')
+        .setTitle(`${EMOJI.giveaway} Tournament Setup & Auto-Generation Wizard`)
         .setColor(0x5865F2)
         .setDescription(
+          `${EMOJI.dividerBar}\n` +
           `Create a tournament instantly! The bot will validate permissions and automatically create:\n` +
-          `• 📁 **Tournament Category** (\`🏆 ┃ TOURNAMENTS\`)\n` +
-          `• 📋 **#rules-format** (Information, format, & rules)\n` +
-          `• 📝 **#registration** (Tag-basis verification channel)\n` +
-          `• 📊 **#slot-list** (Live slots divided by Groups)\n` +
-          `• 🔑 **#id-pass** (Restricted to **@Verified Team** role)\n` +
-          `• 🛡️ **@Verified Team Role** (Auto-assigned upon successful registration)\n\n` +
-          `**Choose a quick preset below or reply with custom parameters:**`
+          `${EMOJI.golden} **Tournament Category**\n` +
+          `${EMOJI.admin} **#tournament-rules** (Information, format, & rules)\n` +
+          `${EMOJI.sword} **#tournament-registration** (Tag-basis verification channel)\n` +
+          `${EMOJI.golden} **#slot-list** (Live slots divided by Groups)\n` +
+          `${EMOJI.giveaway} **#tournament-idp** (Public — Chat Locked)\n` +
+          `${EMOJI.done} **@Verified Team Role** (Auto-assigned upon successful registration)\n\n` +
+          `**Choose a quick preset below or reply with custom parameters:**\n` +
+          `${EMOJI.dividerBar}`
         )
         .addFields(
           {
-            name: '⚡ Quick Preset 1: Squad Scrims',
+            name: `${EMOJI.sword} Quick Preset 1: Squad Scrims`,
             value: '`20 Slots` • `4 Tags` • `1 Group`',
             inline: true
           },
           {
-            name: '👥 Quick Preset 2: 2-Group Scrims',
+            name: `${EMOJI.golden} Quick Preset 2: 2-Group Scrims`,
             value: '`32 Slots` • `4 Tags` • `2 Groups (A & B)`',
             inline: true
           },
           {
-            name: '🏆 Quick Preset 3: 4-Group Championship',
+            name: `${EMOJI.giveaway} Quick Preset 3: 4-Group Championship`,
             value: '`48 Slots` • `4 Tags` • `4 Groups (A, B, C, D)`',
             inline: true
           },
           {
-            name: '🎯 Quick Preset 4: Duo Scrims',
+            name: `${EMOJI.sword} Quick Preset 4: Duo Scrims`,
             value: '`24 Slots` • `2 Tags` • `1 Group`',
             inline: true
           },
           {
-            name: '⌨️ Fast Command Syntax',
-            value: '`!setup <slots> <tags> <groups> [Tournament Name]`\n*Example:* `!setup 20 4 2 Glacier Cup S1`',
+            name: `${EMOJI.admin} Fast Command Syntax`,
+            value: '`!setup <slots> <tags> <groups> [Tournament Name]`\n*Example:* `!setup 20 4 20 Glacier Cup S1`',
             inline: false
           }
         )
@@ -2672,37 +4103,42 @@ class DiscordBotManager {
           this.pendingRulesPrompts.set(`${interaction.guild!.id}:${interaction.user.id}`, {
             guildId: interaction.guild!.id,
             channelId: message.channel.id,
+            tournamentId: res.tournamentId,
             expiresAt: Date.now() + 10 * 60 * 1000
           });
 
           const doneEmbed = new EmbedBuilder()
-            .setTitle('🏆 Tournament Auto-Created!')
+            .setTitle(`${EMOJI.giveaway} Tournament Auto-Created!`)
             .setColor(res.warnings && res.warnings.length > 0 ? 0xFEE75C : 0x57F287)
-            .setDescription(`**${chosenTitle}** is ready in **${interaction.guild?.name}**!`)
-            .addFields(
-              { name: 'Configuration', value: `\`${chosenSlots} Slots\` • \`${chosenTags} Tags/Team\` • \`${chosenGroups} Group(s)\``, inline: false },
-              { name: 'Created Channels & Role', value: res.created.join('\n') || 'Channels ready', inline: false }
+            .setDescription(
+              `${EMOJI.dividerBar}\n` +
+              `${EMOJI.done} **${chosenTitle}** is ready in **${interaction.guild?.name}**!\n` +
+              `${EMOJI.dividerBar}`
             )
-            .setFooter({ text: 'Teams registering will be granted @Verified Team and unlock #id-pass' });
+            .addFields(
+              { name: `${EMOJI.golden} Configuration`, value: `\`${chosenSlots} Slots\` • \`${chosenTags} Tags/Team\` • \`${chosenGroups} Group(s)\``, inline: false },
+              { name: `${EMOJI.admin} Created Channels & Role`, value: res.created.join('\n') || 'Channels ready', inline: false }
+            )
+            .setFooter({ text: 'Teams registering will be granted @Verified Team' });
 
           if (res.warnings && res.warnings.length > 0) {
             doneEmbed.addFields({
-              name: '⚠️ Partial Setup Warnings',
+              name: `${EMOJI.alert} Partial Setup Warnings`,
               value: res.warnings.join('\n'),
               inline: false
             });
           }
 
           doneEmbed.addFields({
-            name: '📜 Next Step — Provide Tournament Rules',
-            value: 'Please **send your Tournament Rules & Format** in this channel (or click the button below) and I will post them in `#📋┃rules-format`!',
+            name: `${EMOJI.admin} Next Step — Provide Tournament Rules`,
+            value: 'Please **send your Tournament Rules & Format** in this channel (or click the button below) and I will post them in `#tournament-rules`!',
             inline: false
           });
 
           await promptMsg.edit({
-            content: '✅ **Setup Complete! Please provide your tournament rules:**',
+            content: `${EMOJI.done} **Setup Complete! Please provide your tournament rules:**`,
             embeds: [doneEmbed],
-            components: [this.createRulesButtonRow()]
+            components: [this.createRulesButtonRow(res.tournamentId)]
           });
         } else {
           const rollbackNote = res.rolledBack && res.rolledBack.length > 0
@@ -2719,34 +4155,25 @@ class DiscordBotManager {
         return message.reply('❌ You need `Manage Channels` permission to manage tournaments.');
       }
       const sub = args[0]?.toLowerCase();
-      if (sub === 'open') {
-        config.status = 'open';
-        config.explicitlyStoppedOrPaused = false;
-        if (this.onConfigUpdated) this.onConfigUpdated();
-        this.logEvent('info', `Admin @${message.author.username} opened registrations via Discord command.`, message.guild?.name);
-        return message.reply('🟢 **Tournament registrations are now OPEN!**');
-      } else if (sub === 'pause') {
-        config.status = 'paused';
-        config.explicitlyStoppedOrPaused = true;
-        if (this.onConfigUpdated) this.onConfigUpdated();
-        this.logEvent('info', `Admin @${message.author.username} paused registrations via Discord command.`, message.guild?.name);
-        return message.reply('⏸️ **Tournament registrations are now PAUSED!**');
-      } else if (sub === 'close') {
-        config.status = 'closed';
-        config.explicitlyStoppedOrPaused = true;
-        if (this.onConfigUpdated) this.onConfigUpdated();
-        this.logEvent('info', `Admin @${message.author.username} closed registrations via Discord command.`, message.guild?.name);
+      if (sub === 'close' || sub === 'stop') {
+        const res = await this.stopRegistration(message.guild || undefined, 'Stopped by staff.', message.author.username, config);
+        if (!res.success) return message.reply(`❌ ${res.error}`);
         return message.reply('🔴 **Tournament registrations are now CLOSED!**');
       } else if (sub === 'reset') {
-        const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+        const allTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+        const tourneyTeams = this.getTeamsForTournament(config);
         if (message.guild) {
-          for (const t of teams) {
+          for (const t of tourneyTeams) {
             await this.cleanupTeamWorkspace(message.guild, t).catch(() => {});
           }
         }
-        teams.length = 0;
+        const removeIds = new Set(tourneyTeams.map(t => t.id));
+        for (let i = allTeams.length - 1; i >= 0; i--) {
+          if (removeIds.has(allTeams[i].id)) allTeams.splice(i, 1);
+        }
         config.status = 'open';
         config.explicitlyStoppedOrPaused = false;
+        this.syncTournamentToRootConfig(config, false);
         if (this.onConfigUpdated) this.onConfigUpdated();
         await this.syncGuildChannels(config, message.guild);
         this.logEvent('warn', `Admin @${message.author.username} reset registrations via Discord command.`, message.guild?.name);
@@ -2762,7 +4189,7 @@ class DiscordBotManager {
       if (mentionedUser || idMatch || (rawArg && isNaN(parseInt(rawArg, 10)))) {
         const targetId = this.normalizeMemberId(mentionedUser?.id || (idMatch ? idMatch[1] : rawArg));
         const targetName = mentionedUser?.username || targetId;
-        const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+        const teams = this.getTeamsForTournament(config);
         const banned = this.blacklist.find(
           b => this.normalizeMemberId(b.userId) === targetId || b.username.toLowerCase() === targetName.toLowerCase()
         );
@@ -2779,17 +4206,21 @@ class DiscordBotManager {
         );
 
         const embed = new EmbedBuilder()
-          .setTitle('🔍 FFA | Glacier Cup Manager™ Player Tagcheck Dossier')
+          .setTitle(`${EMOJI.admin} FFA | Glacier Cup Manager™ Player Tagcheck Dossier`)
           .setColor(banned ? 0xED4245 : foundTeam ? 0xFEE75C : 0x57F287)
-          .setDescription(`Inspection results for <@${targetId}> (\`${targetName}\`):`)
+          .setDescription(
+            `${EMOJI.dividerBar}\n` +
+            `Inspection results for <@${targetId}> (\`${targetName}\`):\n` +
+            `${EMOJI.dividerBar}`
+          )
           .addFields(
             {
-              name: 'Eligibility Status',
+              name: `${EMOJI.golden} Eligibility Status`,
               value: banned
-                ? `🚫 **BLACKLISTED** — Reason: *${banned.reason}*`
+                ? `${EMOJI.alert} **BLACKLISTED** — Reason: *${banned.reason}*`
                 : foundTeam
-                ? `⚠️ **ALREADY REGISTERED** (Cannot join another team)`
-                : `✅ **ELIGIBLE / FREE AGENT** (Cleared to register)`,
+                ? `${EMOJI.alert} **ALREADY REGISTERED** (Cannot join another team)`
+                : `${EMOJI.done} **ELIGIBLE / FREE AGENT** (Cleared to register)`,
               inline: false
             }
           )
@@ -2797,9 +4228,9 @@ class DiscordBotManager {
 
         if (foundTeam) {
           embed.addFields(
-            { name: 'Registered Team', value: `**${foundTeam.teamName}**`, inline: true },
-            { name: 'Allocated Slot', value: foundTeam.isWaitlist ? `Waitlist #${foundTeam.slotNumber}` : `Slot #${foundTeam.slotNumber} (${foundTeam.group || 'Group A'})`, inline: true },
-            { name: 'Team Captain', value: `<@${foundTeam.captain.id}>`, inline: true }
+            { name: `${EMOJI.sword} Registered Team`, value: `**${foundTeam.teamName}**`, inline: true },
+            { name: `${EMOJI.golden} Allocated Slot`, value: foundTeam.isWaitlist ? `Waitlist #${foundTeam.slotNumber}` : `Slot #${foundTeam.slotNumber} (${foundTeam.group || 'Group A'})`, inline: true },
+            { name: `${EMOJI.admin} Team Captain`, value: `<@${foundTeam.captain.id}>`, inline: true }
           );
         }
         return message.reply({ embeds: [embed] });
@@ -2823,24 +4254,24 @@ class DiscordBotManager {
     }
 
     if (cmd === 'slots') {
-      const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+      const teams = this.getTeamsForTournament(config);
       const confirmed = teams.filter(t => !t.isWaitlist);
       const waitlist = teams.filter(t => t.isWaitlist);
       const groupedChunks = this.formatGroupedSlotListChunks(confirmed, config);
       const embed = new EmbedBuilder()
-        .setTitle(`📊 ${config.title || 'Tournament'} — Live Slot List`)
+        .setTitle(`${EMOJI.giveaway} ${config.title || 'Tournament'} — Live Slot List`)
         .setColor(0x5865F2)
-        .setDescription(groupedChunks[0])
+        .setDescription(`${EMOJI.dividerBar}\n${groupedChunks[0]}\n${EMOJI.dividerBar}`)
         .addFields(
-          { name: 'Confirmed Slots', value: `\`${confirmed.length} / ${config.totalSlots}\``, inline: true },
-          { name: 'Teams Per Group', value: `\`${config.teamsPerGroup || config.totalSlots || 20} Teams/Group\``, inline: true },
-          { name: 'Registration Status', value: config.status === 'open' ? '🟢 `OPEN`' : config.status === 'paused' ? '⏸️ `PAUSED`' : '🔴 `LOCKED`', inline: true }
+          { name: `${EMOJI.golden} Confirmed Slots`, value: `\`${confirmed.length} / ${config.totalSlots}\``, inline: true },
+          { name: `${EMOJI.sword} Teams Per Group`, value: `\`${config.teamsPerGroup || config.totalSlots || 20} Teams/Group\``, inline: true },
+          { name: `${EMOJI.admin} Registration Status`, value: config.status === 'open' ? `${EMOJI.done} \`OPEN\`` : `${EMOJI.alert} \`LOCKED\``, inline: true }
         )
         .setTimestamp();
       if (waitlist.length > 0) {
         embed.addFields({
-          name: `⏳ Waiting List (${waitlist.length}/${config.waitlistSlots})`,
-          value: waitlist.map(w => `\`WL #${w.slotNumber}\` **${w.teamName}** — <@${w.captain.id}>`).join('\n').slice(0, 1020),
+          name: `${EMOJI.alert} Waiting List (${waitlist.length}/${config.waitlistSlots})`,
+          value: waitlist.map(w => `${EMOJI.golden} \`WL #${w.slotNumber}\` **${w.teamName}** — <@${w.captain.id}>`).join('\n').slice(0, 1020),
           inline: false
         });
       }
@@ -2870,24 +4301,28 @@ class DiscordBotManager {
       const res = await this.dispatchIdp(creds, config, message.guild || undefined);
       if (!res.success) {
         return (message.channel as TextChannel).send(
-          `❌ **Failed to publish Room ID & Password:** ${res.error || 'Could not send to #id-pass.'}`
+          `❌ **Failed to publish Room ID & Password:** ${res.error || 'Could not send to #tournament-idp.'}`
         );
       }
       const maskedId = roomId.length > 2 ? `***${roomId.slice(-2)}` : '***';
       const embed = new EmbedBuilder()
-        .setTitle('🔑 Room ID & Password Dispatched!')
+        .setTitle(`${EMOJI.done} Room ID & Password Dispatched!`)
         .setColor(res.failedGuilds.length > 0 ? 0xFEE75C : 0x57F287)
-        .setDescription(`Credentials have been published to **#${config.idpChannel || 'id-pass'}** (${res.sentCount} channel(s) notified). Command message was auto-deleted to protect lobby credentials.`)
+        .setDescription(
+          `${EMOJI.dividerBar}\n` +
+          `Credentials have been published to **#${config.idpChannel || 'tournament-idp'}** (${res.sentCount} channel(s) notified). Command message was auto-deleted to protect lobby credentials.\n` +
+          `${EMOJI.dividerBar}`
+        )
         .addFields(
-          { name: 'Room ID', value: `\`${maskedId}\` *(See #id-pass)*`, inline: true },
-          { name: 'Password', value: '`[REDACTED]` *(See #id-pass)*', inline: true },
-          { name: 'Map & Time', value: `${mapName} • ${matchTime}`, inline: true }
+          { name: `${EMOJI.golden} Room ID`, value: `\`${maskedId}\` *(See #tournament-idp)*`, inline: true },
+          { name: `${EMOJI.admin} Password`, value: '`[REDACTED]` *(See #tournament-idp)*', inline: true },
+          { name: `${EMOJI.sword} Map & Time`, value: `${mapName} • ${matchTime}`, inline: true }
         )
         .setTimestamp();
 
       if (res.failedGuilds.length > 0) {
         embed.addFields({
-          name: '⚠️ Publication Failures',
+          name: `${EMOJI.alert} Publication Failures`,
           value: res.failedGuilds.map(f => `• **${f.guildName}**: ${f.reason}`).join('\n'),
           inline: false
         });
@@ -2895,59 +4330,23 @@ class DiscordBotManager {
       return (message.channel as TextChannel).send({ embeds: [embed] });
     }
 
-    if (cmd === 'pause-registration' || cmd === 'pausereg' || cmd === 'pause') {
-      if (!isStaff) return message.reply('❌ Permission denied.');
-      const reason = args.join(' ') || 'Registration temporarily paused by tournament administrator.';
-      const res = await this.pauseRegistration(message.guild || undefined, reason, message.author.username);
-      if (!res.success) {
-        return message.reply(`❌ ${res.error}`);
-      }
-      const embed = new EmbedBuilder()
-        .setTitle('⏸️ Tournament Registration Paused')
-        .setColor(0xFEE75C)
-        .setDescription(
-          `Registrations for **${config.title || 'Active Tournament'}** are now **PAUSED** and \`#${config.regChannel || '📝┃registration'}\` is temporarily locked.\n` +
-          `**Reason:** ${reason}\n\n` +
-          `▶️ Run \`/start-registration\` (or \`!start-registration\`) to resume registrations.`
-        )
-        .setFooter({ text: `Paused by @${message.author.username}` })
-        .setTimestamp();
-      return message.reply({ embeds: [embed] });
-    }
-
     if (cmd === 'stop-registration' || cmd === 'stopreg' || cmd === 'lock') {
       if (!isStaff) return message.reply('❌ Permission denied.');
       const reason = args.join(' ') || 'Registration ended and channel locked by tournament administrator.';
-      const res = await this.stopRegistration(message.guild || undefined, reason, message.author.username);
+      const res = await this.stopRegistration(message.guild || undefined, reason, message.author.username, config);
       if (!res.success) {
         return message.reply(`❌ ${res.error}`);
       }
       const embed = new EmbedBuilder()
-        .setTitle('🔴 Tournament Registration Ended & Channel Locked')
+        .setTitle(`${EMOJI.alert} Tournament Registration Ended & Channel Locked`)
         .setColor(0xED4245)
         .setDescription(
-          `Registrations for **${config.title || 'Active Tournament'}** are now **CLOSED** and \`#${config.regChannel || '📝┃registration'}\` has been **LOCKED**.\n` +
-          `**Reason:** ${reason}`
+          `${EMOJI.dividerBar}\n` +
+          `Registrations for **${config.title || 'Active Tournament'}** are now **CLOSED** and \`#${config.regChannel || 'tournament-registration'}\` has been **LOCKED**.\n` +
+          `${EMOJI.admin} **Reason:** ${reason}\n` +
+          `${EMOJI.dividerBar}`
         )
         .setFooter({ text: `Stopped by @${message.author.username}` })
-        .setTimestamp();
-      return message.reply({ embeds: [embed] });
-    }
-
-    if (cmd === 'start-registration' || cmd === 'startreg' || cmd === 'unlock') {
-      if (!isStaff) return message.reply('❌ Permission denied.');
-      const res = await this.startRegistration(message.guild || undefined, message.author.username);
-      if (!res.success) {
-        return message.reply(`❌ ${res.error}`);
-      }
-      const embed = new EmbedBuilder()
-        .setTitle('🟢 Tournament Registration Started & Channel Unlocked!')
-        .setColor(0x57F287)
-        .setDescription(
-          `Registrations for **${config.title}** are now **OPEN** and \`#${config.regChannel || '📝┃registration'}\` has been **UNLOCKED**!\n` +
-          `Players can now tag **${config.requiredTags} players** with their Team Name to claim a slot.`
-        )
-        .setFooter({ text: `Started by @${message.author.username}` })
         .setTimestamp();
       return message.reply({ embeds: [embed] });
     }
@@ -2966,12 +4365,16 @@ class DiscordBotManager {
         const reason = args.slice(2).join(' ') || 'Fairplay / Tournament Rule Violation';
         const entry = this.addToBlacklist(targetId, targetName, reason, message.author.username);
         const embed = new EmbedBuilder()
-          .setTitle('🚫 Player Added to Tournament Blacklist')
+          .setTitle(`${EMOJI.alert} Player Added to Tournament Blacklist`)
           .setColor(0xED4245)
-          .setDescription(`Player <@${entry.userId}> (\`${entry.username}\`) is now banned from registering or being tagged in any squad.`)
+          .setDescription(
+            `${EMOJI.dividerBar}\n` +
+            `Player <@${entry.userId}> (\`${entry.username}\`) is now banned from registering or being tagged in any squad.\n` +
+            `${EMOJI.dividerBar}`
+          )
           .addFields(
-            { name: 'Reason', value: entry.reason, inline: true },
-            { name: 'Banned By', value: `@${entry.addedBy}`, inline: true }
+            { name: `${EMOJI.golden} Reason`, value: entry.reason, inline: true },
+            { name: `${EMOJI.admin} Banned By`, value: `@${entry.addedBy}`, inline: true }
           )
           .setTimestamp();
         return message.reply({ embeds: [embed] });
@@ -2983,16 +4386,18 @@ class DiscordBotManager {
         }
         const targetId = mentioned ? mentioned.id : rawTarget;
         const removed = this.removeFromBlacklist(targetId);
-        return message.reply(removed ? `✅ Removed \`${targetId}\` from the tournament blacklist.` : `❌ Player \`${targetId}\` was not found on the blacklist.`);
+        return message.reply(removed ? `${EMOJI.done} Removed \`${targetId}\` from the tournament blacklist.` : `❌ Player \`${targetId}\` was not found on the blacklist.`);
       } else {
         const list = this.getBlacklist();
         const embed = new EmbedBuilder()
-          .setTitle(`🚫 Tournament Blacklist (${list.length})`)
+          .setTitle(`${EMOJI.alert} Tournament Blacklist (${list.length})`)
           .setColor(0xED4245)
           .setDescription(
-            list.length > 0
-              ? list.map((b, i) => `\`${i + 1}.\` <@${b.userId}> (\`${b.username}\`) — *${b.reason}*`).join('\n')
-              : '✅ No players are currently blacklisted.'
+            `${EMOJI.dividerBar}\n` +
+            (list.length > 0
+              ? list.map((b, i) => `${EMOJI.golden} \`${i + 1}.\` <@${b.userId}> (\`${b.username}\`) — *${b.reason}*`).join('\n')
+              : `${EMOJI.done} No players are currently blacklisted.`) +
+            `\n${EMOJI.dividerBar}`
           )
           .setTimestamp();
         return message.reply({ embeds: [embed] });
@@ -3005,7 +4410,7 @@ class DiscordBotManager {
       if (!query) {
         return message.reply('❌ Usage: `!team <slot_number_or_team_name>` (e.g. `!team 1` or `!team Soul`).');
       }
-      const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+      const teams = this.getTeamsForTournament(config);
       const slotNum = parseInt(query.replace(/\D/g, ''), 10);
       const found = (!isNaN(slotNum) && String(slotNum) === query.replace('#', ''))
         ? teams.find(t => t.slotNumber === slotNum)
@@ -3016,36 +4421,41 @@ class DiscordBotManager {
       }
 
       const embed = new EmbedBuilder()
-        .setTitle(`🛡️ Team Dossier — ${found.teamName}`)
+        .setTitle(`${EMOJI.sword} Team Dossier — ${found.teamName}`)
         .setColor(found.isWaitlist ? 0xFEE75C : 0x5865F2)
+        .setDescription(`${EMOJI.dividerBar}`)
         .addFields(
-          { name: 'Slot Allocation', value: found.isWaitlist ? `\`Waitlist #${found.slotNumber}\`` : `\`Slot #${found.slotNumber}\``, inline: true },
-          { name: 'Assigned Group', value: `\`${found.group || 'Group A'}\``, inline: true },
-          { name: 'Team Captain', value: `<@${found.captain.id}>`, inline: true },
+          { name: `${EMOJI.golden} Slot Allocation`, value: found.isWaitlist ? `\`Waitlist #${found.slotNumber}\`` : `\`Slot #${found.slotNumber}\``, inline: true },
+          { name: `${EMOJI.golden} Assigned Group`, value: `\`${found.group || 'Group A'}\``, inline: true },
+          { name: `${EMOJI.admin} Team Captain`, value: `<@${found.captain.id}>`, inline: true },
           {
-            name: `Verified Roster (${found.players.length} Players)`,
-            value: found.players.map((p: any, idx: number) => `\`${idx + 1}.\` <@${p.id}> (\`${p.displayName || p.username}\`)`).join('\n') || 'None',
+            name: `${EMOJI.sword} Verified Roster (${found.players.length} Players)`,
+            value: found.players.map((p: any, idx: number) => `${EMOJI.golden} \`${idx + 1}.\` <@${p.id}> (\`${p.displayName || p.username}\`)`).join('\n') || 'None',
             inline: false
           },
-          { name: 'Registered At', value: new Date(found.registeredAt).toLocaleString(), inline: true },
-          { name: 'Team Role & Tourney Role', value: `${found.teamRoleId ? `<@&${found.teamRoleId}>` : `\`@${found.teamRoleName || found.teamName}\``} • \`@${config.verifiedRoleName || 'Verified Team'}\``, inline: true },
+          { name: `${EMOJI.giveaway} Registered At`, value: new Date(found.registeredAt).toLocaleString(), inline: true },
+          { name: `${EMOJI.admin} Team Role & Tourney Role`, value: `${found.teamRoleId ? `<@&${found.teamRoleId}>` : `\`@${found.teamRoleName || found.teamName}\``} • \`@${config.verifiedRoleName || 'Verified Team'}\``, inline: true },
           {
-            name: 'Team Category & Private VC',
+            name: `${EMOJI.done} Team Category & Private VC`,
             value: `📁 \`${found.teamCategoryName || found.teamName}\` • 🔊 ${found.teamVoiceChannelId ? `<#${found.teamVoiceChannelId}>` : `\`${found.teamVoiceChannelName || found.teamName}\``}`,
             inline: false
           }
         )
         .setFooter({ text: `Team ID: ${found.id}` })
         .setTimestamp();
+      const voiceUrl =
+        message.guild && found.teamVoiceChannelId
+          ? await this.resolveVoiceConnectUrl(message.guild, found.teamVoiceChannelId, found.teamVoiceInviteUrl)
+          : undefined;
       const components =
         message.guild && found.teamVoiceChannelId
-          ? [this.createVoiceConnectButtonRow(message.guild.id, found.teamVoiceChannelId, found.teamVoiceChannelName || found.teamName)]
+          ? [this.createVoiceConnectButtonRow(message.guild.id, found.teamVoiceChannelId, found.teamVoiceChannelName || found.teamName, voiceUrl)]
           : [];
       return message.reply({ embeds: [embed], components });
     }
 
     if (cmd === 'standings' || cmd === 'points' || cmd === 'leaderboard') {
-      const teams = (this.getRegisteredTeams ? this.getRegisteredTeams() : []).filter(t => !t.isWaitlist);
+      const teams = this.getTeamsForTournament(config).filter(t => !t.isWaitlist);
       const groupFilter = args[0] ? `Group ${args[0].toUpperCase().replace('GROUP', '').trim()}` : null;
       const filtered = groupFilter ? teams.filter(t => (t.group || 'Group A').toLowerCase() === groupFilter.toLowerCase()) : teams;
 
@@ -3054,16 +4464,20 @@ class DiscordBotManager {
         const placePts = Math.max(4, 28 - idx * 4);
         const killPts = Math.max(2, 22 - idx * 3);
         const total = placePts + killPts;
-        const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `\`#${idx + 1}\``;
+        const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${EMOJI.golden} \`#${idx + 1}\``;
         return `${medal} **${t.teamName}** (Slot #${t.slotNumber}) — **${total} Pts** *(Wins: ${wins} | Finishes: ${killPts})*`;
       });
 
       const embed = new EmbedBuilder()
-        .setTitle(`🏆 ${config.title} — Official Standings ${groupFilter ? `(${groupFilter})` : ''}`)
+        .setTitle(`${EMOJI.giveaway} ${config.title} — Official Standings ${groupFilter ? `(${groupFilter})` : ''}`)
         .setColor(0xFEE75C)
-        .setDescription(rows.length > 0 ? rows.join('\n') : '*No confirmed teams to rank yet.*')
+        .setDescription(
+          `${EMOJI.dividerBar}\n` +
+          (rows.length > 0 ? rows.join('\n') : '*No confirmed teams to rank yet.*') +
+          `\n${EMOJI.dividerBar}`
+        )
         .addFields({
-          name: '📊 Official Scoring Matrix',
+          name: `${EMOJI.sword} Official Scoring Matrix`,
           value: '`1st: 10 pts` • `2nd: 6 pts` • `3rd: 5 pts` • `4th: 4 pts` • `5th: 3 pts` • `6th: 2 pts` • `7th-8th: 1 pt` • `Finish: +1 pt`',
           inline: false
         })
@@ -3075,12 +4489,16 @@ class DiscordBotManager {
     if (cmd === 'rules') {
       const customText = args.join(' ').trim();
       if (isStaff && message.guild && customText.length > 0) {
-        const pubRes = await this.publishRulesToChannel(message.guild, customText, message.author.username);
+        const pubRes = await this.publishRulesToChannel(message.guild, customText, message.author.username, config);
         if (pubRes.success) {
           const embed = new EmbedBuilder()
-            .setTitle('✅ Tournament Rules Published!')
+            .setTitle(`${EMOJI.done} Tournament Rules Published!`)
             .setColor(0x57F287)
-            .setDescription(`Your custom tournament rules & format have been posted in <#${pubRes.channelId}>!`)
+            .setDescription(
+              `${EMOJI.dividerBar}\n` +
+              `${EMOJI.golden} Your custom tournament rules & format have been posted in <#${pubRes.channelId}>!\n` +
+              `${EMOJI.dividerBar}`
+            )
             .setFooter({ text: `Published by @${message.author.username} • FFA-Manager` })
             .setTimestamp();
           return message.reply({ embeds: [embed] });
@@ -3092,27 +4510,34 @@ class DiscordBotManager {
         this.pendingRulesPrompts.set(`${message.guild.id}:${message.author.id}`, {
           guildId: message.guild.id,
           channelId: message.channel.id,
+          tournamentId: config?.id,
           expiresAt: Date.now() + 10 * 60 * 1000
         });
         const promptEmbed = new EmbedBuilder()
-          .setTitle('📜 Set Tournament Rules & Format')
+          .setTitle(`${EMOJI.admin} Set Tournament Rules & Format`)
           .setColor(0x5865F2)
           .setDescription(
-            'Please **reply with your Tournament Rules & Format** as your next message in this channel (or click the button below), and I will publish it directly to `#📋┃rules-format`!'
+            `${EMOJI.dividerBar}\n` +
+            `Please **reply with your Tournament Rules & Format** as your next message in this channel (or click the button below), and I will publish it directly to \`#tournament-rules\`!\n` +
+            `${EMOJI.dividerBar}`
           )
           .setFooter({ text: 'FFA-Manager Rules Publisher' });
-        return message.reply({ embeds: [promptEmbed], components: [this.createRulesButtonRow()] });
+        return message.reply({ embeds: [promptEmbed], components: [this.createRulesButtonRow(config?.id)] });
       }
 
       const embed = new EmbedBuilder()
-        .setTitle(`📜 ${config.title} — Official Tournament Rulebook`)
+        .setTitle(`${EMOJI.admin} ${config.title} — Official Tournament Rulebook`)
         .setColor(0x5865F2)
-        .setDescription(config.customRules || '*No custom rules have been published yet. Staff can run `/rules` or `!rules <text>` to set and post rules to `#📋┃rules-format`.*')
+        .setDescription(
+          `${EMOJI.dividerBar}\n` +
+          (config.customRules || '*No custom rules have been published yet. Staff can run `/rules` or `!rules <text>` to set and post rules to `#tournament-rules`.*') +
+          `\n${EMOJI.dividerBar}`
+        )
         .setFooter({ text: 'FFA-Manager' })
         .setTimestamp();
       return message.reply({
         embeds: [embed],
-        components: isStaff ? [this.createRulesButtonRow()] : []
+        components: isStaff ? [this.createRulesButtonRow(config?.id)] : []
       });
     }
 
@@ -3123,9 +4548,9 @@ class DiscordBotManager {
         return message.reply('❌ Usage: `!announce <your official tournament message>`');
       }
       const embed = new EmbedBuilder()
-        .setTitle(`📢 Official Tournament Announcement — ${config.title}`)
+        .setTitle(`${EMOJI.giveaway} Official Tournament Announcement — ${config.title}`)
         .setColor(0x5865F2)
-        .setDescription(announcementText)
+        .setDescription(`${EMOJI.dividerBar}\n${announcementText}\n${EMOJI.dividerBar}`)
         .setFooter({ text: `Announced by @${message.author.username} • FFA | Glacier Cup Manager™` })
         .setTimestamp();
       this.logEvent('info', `Announcement published by @${message.author.username}`, message.guild?.name);
@@ -3139,17 +4564,21 @@ class DiscordBotManager {
       if (isNaN(s1) || isNaN(s2)) {
         return message.reply('❌ Usage: `!swap <slot1> <slot2>` (e.g. `!swap 1 2`).');
       }
-      const res = await this.swapSlots(s1, s2, message.guild || undefined);
+      const res = await this.swapSlots(s1, s2, message.guild || undefined, config);
       if (!res.success) {
         return message.reply(`❌ ${res.error}`);
       }
       const embed = new EmbedBuilder()
-        .setTitle('🔄 Slots Swapped Successfully')
+        .setTitle(`${EMOJI.done} Slots Swapped Successfully`)
         .setColor(0x57F287)
-        .setDescription(`Swapped **Slot #${s1}** (${res.group1}) and **Slot #${s2}** (${res.group2}). The \`#slot-list\` channel has been updated!`)
+        .setDescription(
+          `${EMOJI.dividerBar}\n` +
+          `Swapped **Slot #${s1}** (${res.group1}) and **Slot #${s2}** (${res.group2}). The \`#slot-list\` channel has been updated!\n` +
+          `${EMOJI.dividerBar}`
+        )
         .addFields(
-          { name: `Slot #${s1} (${res.group1})`, value: res.team2 ? `**${res.team2.teamName}**` : '*Open Slot*', inline: true },
-          { name: `Slot #${s2} (${res.group2})`, value: res.team1 ? `**${res.team1.teamName}**` : '*Open Slot*', inline: true }
+          { name: `${EMOJI.golden} Slot #${s1} (${res.group1})`, value: res.team2 ? `**${res.team2.teamName}**` : '*Open Slot*', inline: true },
+          { name: `${EMOJI.golden} Slot #${s2} (${res.group2})`, value: res.team1 ? `**${res.team1.teamName}**` : '*Open Slot*', inline: true }
         )
         .setTimestamp();
       return message.reply({ embeds: [embed] });
@@ -3158,11 +4587,11 @@ class DiscordBotManager {
     if (cmd === 'export') {
       if (!isStaff) return message.reply('❌ Permission denied.');
       const format = (args[0] || 'markdown').toLowerCase() === 'csv' ? 'csv' : 'markdown';
-      const allTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
-      const output = this.generateRosterExport(format, true);
+      const allTeams = this.getTeamsForTournament(config);
+      const output = this.generateRosterExport(format, true, config);
       const safeOutput = output.length > 3800 ? output.slice(0, 3800) + '\n...truncated' : output;
       const embed = new EmbedBuilder()
-        .setTitle(`📤 Exported Tournament Roster (${allTeams.length} Teams)`)
+        .setTitle(`${EMOJI.golden} Exported Tournament Roster (${allTeams.length} Teams)`)
         .setColor(0x5865F2)
         .setDescription(`\`\`\`${format === 'csv' ? 'csv' : 'text'}\n${safeOutput}\n\`\`\``)
         .setFooter({ text: 'Consistent with live roster • Ready for casters & production overlays' })
@@ -3178,18 +4607,22 @@ class DiscordBotManager {
         if (isNaN(slotNum)) {
           return message.reply('❌ Please specify a valid slot number. Usage: `!delete slot <number>` (or `/delete slot`).');
         }
-        const result = await this.deleteSlot(slotNum, message.guild || undefined);
+        const result = await this.deleteSlot(slotNum, message.guild || undefined, { tournamentId: config?.id }, config);
         if (result.success && result.deletedTeam) {
           const embed = new EmbedBuilder()
-            .setTitle('🗑️ Slot Deleted Successfully')
+            .setTitle(`${EMOJI.alert} Slot Deleted Successfully`)
             .setColor(result.syncWarnings && result.syncWarnings.length > 0 ? 0xFEE75C : 0xED4245)
-            .setDescription(`**Slot #${slotNum}** (${result.deletedTeam.teamName}) has been removed.`)
+            .setDescription(
+              `${EMOJI.dividerBar}\n` +
+              `**Slot #${slotNum}** (${result.deletedTeam.teamName}) has been removed.\n` +
+              `${EMOJI.dividerBar}`
+            )
             .addFields(
-              { name: 'Removed Team', value: `**${result.deletedTeam.teamName}** (Captain: <@${result.deletedTeam.captain.id}>)`, inline: false },
+              { name: `${EMOJI.sword} Removed Team`, value: `**${result.deletedTeam.teamName}** (Captain: <@${result.deletedTeam.captain.id}>)`, inline: false },
               {
-                name: 'Waitlist Promotion',
+                name: `${EMOJI.golden} Waitlist Promotion`,
                 value: result.promotedTeam
-                  ? `✅ **${result.promotedTeam.teamName}** was auto-promoted from the waitlist to confirmed **Slot #${result.promotedTeam.slotNumber}** (${result.promotedTeam.group || 'Group A'})!`
+                  ? `${EMOJI.done} **${result.promotedTeam.teamName}** was auto-promoted from the waitlist to confirmed **Slot #${result.promotedTeam.slotNumber}** (${result.promotedTeam.group || 'Group A'})!`
                   : 'ℹ️ No teams on the waitlist to promote.',
                 inline: false
               }
@@ -3198,7 +4631,7 @@ class DiscordBotManager {
 
           if (result.syncWarnings && result.syncWarnings.length > 0) {
             embed.addFields({
-              name: '⚠️ Role / Channel Sync Notice',
+              name: `${EMOJI.alert} Role / Channel Sync Notice`,
               value: result.syncWarnings.join('\n'),
               inline: false
             });
@@ -3210,62 +4643,70 @@ class DiscordBotManager {
       } else if (sub === 'tournament') {
         const confirmedArg = args[1]?.toLowerCase() === 'confirm';
         if (!confirmedArg) {
-          const preview = await this.previewDeleteTournament(message.guild || undefined, true);
+          const preview = await this.previewDeleteTournament(message.guild || undefined, true, config);
           const previewEmbed = new EmbedBuilder()
-            .setTitle('⚠️ Confirm Destructive Action — Delete Tournament')
+            .setTitle(`${EMOJI.alert} Confirm Destructive Action — Delete Tournament`)
             .setColor(0xFEE75C)
-            .setDescription(`You are about to delete **${preview.title}** and reset all registered rosters. Please review what will be removed and confirm below:`)
+            .setDescription(
+              `${EMOJI.dividerBar}\n` +
+              `You are about to delete **${preview.title}** and reset all registered rosters. Please review what will be removed and confirm below:\n` +
+              `${EMOJI.dividerBar}`
+            )
             .addFields(
-              { name: '👥 Rosters to Clear', value: `\`${preview.confirmedCount} Confirmed\` • \`${preview.waitlistCount} Waitlist\``, inline: true },
-              { name: '📁 Categories to Delete', value: preview.categoriesToDelete.length > 0 ? preview.categoriesToDelete.join('\n') : '*(None)*', inline: true },
-              { name: '🔊 Voice Channels to Delete', value: preview.voiceChannelsToDelete.length > 0 ? preview.voiceChannelsToDelete.slice(0, 8).join('\n') + (preview.voiceChannelsToDelete.length > 8 ? `\n...and ${preview.voiceChannelsToDelete.length - 8} more` : '') : '*(None)*', inline: false },
-              { name: '🏷️ Team Roles to Delete', value: preview.rolesToDelete.length > 0 ? preview.rolesToDelete.slice(0, 8).join('\n') + (preview.rolesToDelete.length > 8 ? `\n...and ${preview.rolesToDelete.length - 8} more` : '') : '*(None)*', inline: true },
-              { name: '💬 Text Channels to Delete', value: preview.textChannelsToDelete.length > 0 ? preview.textChannelsToDelete.join('\n') : '*(None)*', inline: true }
+              { name: `${EMOJI.sword} Rosters to Clear`, value: `\`${preview.confirmedCount} Confirmed\` • \`${preview.waitlistCount} Waitlist\``, inline: true },
+              { name: `${EMOJI.golden} Categories to Delete`, value: preview.categoriesToDelete.length > 0 ? preview.categoriesToDelete.join('\n') : '*(None)*', inline: true },
+              { name: `${EMOJI.sword} Voice Channels to Delete`, value: preview.voiceChannelsToDelete.length > 0 ? preview.voiceChannelsToDelete.slice(0, 8).join('\n') + (preview.voiceChannelsToDelete.length > 8 ? `\n...and ${preview.voiceChannelsToDelete.length - 8} more` : '') : '*(None)*', inline: false },
+              { name: `${EMOJI.admin} Team Roles to Delete`, value: preview.rolesToDelete.length > 0 ? preview.rolesToDelete.slice(0, 8).join('\n') + (preview.rolesToDelete.length > 8 ? `\n...and ${preview.rolesToDelete.length - 8} more` : '') : '*(None)*', inline: true },
+              { name: `${EMOJI.golden} Text Channels to Delete`, value: preview.textChannelsToDelete.length > 0 ? preview.textChannelsToDelete.join('\n') : '*(None)*', inline: true }
             )
             .setFooter({ text: 'Click Confirm below or run !delete tournament confirm' })
             .setTimestamp();
 
           return message.reply({
             embeds: [previewEmbed],
-            components: [this.createDeleteConfirmRow(true)]
+            components: [this.createDeleteConfirmRow(true, config?.id)]
           });
         }
 
-        const result = await this.deleteTournament(message.guild || undefined, true);
+        const result = await this.deleteTournament(message.guild || undefined, true, config);
         const embed = new EmbedBuilder()
-          .setTitle('🗑️ Tournament Deleted & All Tournament Assets Removed')
+          .setTitle(`${EMOJI.alert} Tournament Deleted & All Tournament Assets Removed`)
           .setColor(0xED4245)
-          .setDescription(`The active tournament has been deleted. All categories, voice channels, text channels, and team roles have been removed from **${message.guild?.name || 'the server'}**.`)
+          .setDescription(
+            `${EMOJI.dividerBar}\n` +
+            `The active tournament has been deleted. All categories, voice channels, text channels, and team roles have been removed from **${message.guild?.name || 'the server'}**.\n` +
+            `${EMOJI.dividerBar}`
+          )
           .addFields(
             {
-              name: '📁 Deleted Categories',
+              name: `${EMOJI.golden} Deleted Categories`,
               value: result.deletedCategories.length > 0 ? result.deletedCategories.slice(0, 10).join('\n') + (result.deletedCategories.length > 10 ? `\n...and ${result.deletedCategories.length - 10} more` : '') : '*(None)*',
               inline: true
             },
             {
-              name: '🔊 Deleted Voice Channels',
+              name: `${EMOJI.sword} Deleted Voice Channels`,
               value: result.deletedVoiceChannels.length > 0 ? result.deletedVoiceChannels.slice(0, 10).join('\n') + (result.deletedVoiceChannels.length > 10 ? `\n...and ${result.deletedVoiceChannels.length - 10} more` : '') : '*(None)*',
               inline: true
             },
             {
-              name: '🏷️ Deleted Roles',
+              name: `${EMOJI.admin} Deleted Roles`,
               value: result.deletedRoles.length > 0 ? result.deletedRoles.slice(0, 10).join('\n') + (result.deletedRoles.length > 10 ? `\n...and ${result.deletedRoles.length - 10} more` : '') : '*(None)*',
               inline: true
             },
             {
-              name: '💬 Deleted Text Channels',
+              name: `${EMOJI.golden} Deleted Text Channels`,
               value: result.deletedTextChannels.length > 0 ? result.deletedTextChannels.join('\n') : '*(None)*',
               inline: false
             },
             {
-              name: '👥 Cleared Rosters & Slots',
+              name: `${EMOJI.done} Cleared Rosters & Slots`,
               value: `\`${result.clearedTeamsCount} Team(s) cleared\` • Tournament status set to CLOSED`,
               inline: false
             }
           )
           .setFooter({ text: 'FFA | Glacier Cup Manager™ • Run /setup or !setup to create a new tournament' })
           .setTimestamp();
-        return message.reply({ embeds: [embed] });
+        return message.reply({ embeds: [embed] }).catch(() => {});
       } else {
         return message.reply('❌ Usage: `!delete slot <number>` or `!delete tournament` (or use slash commands `/delete slot`, `/delete tournament`).');
       }
@@ -3285,32 +4726,16 @@ class DiscordBotManager {
       config.status = 'open';
     }
 
-    if (config.status === 'paused' && config.explicitlyStoppedOrPaused) {
-      await this.sendErrorAndAutoDelete(
-        message,
-        `Registrations are currently **PAUSED** by tournament staff. Please wait for staff to resume registration with \`/start-registration\`.`
-      );
-      this.logEvent('info', `Registration notice for @${message.author.username}: registrations are paused`, message.guild?.name);
-      return;
-    }
-
     if (config.status !== 'open' && config.explicitlyStoppedOrPaused) {
       await this.sendErrorAndAutoDelete(
         message,
-        `Registrations are currently **CLOSED** (ended by staff). Please wait for tournament staff to run \`/start-registration\`.`
+        `Registrations are currently **CLOSED** (stopped by staff).`
       );
       this.logEvent('info', `Registration notice for @${message.author.username}: registrations are ${config.status}`, message.guild?.name);
       return;
     }
 
-    const existingTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
-
-    for (let i = existingTeams.length - 1; i >= 0; i--) {
-      const cleanedExisting = (existingTeams[i].teamName || '').replace(/^<\s*|\s*>$/g, '').trim().toLowerCase();
-      if (cleanedExisting === 'team name' || cleanedExisting === 'your team' || cleanedExisting === 'your team name') {
-        existingTeams.splice(i, 1);
-      }
-    }
+    const existingTeams = this.getTeamsForTournament(config);
 
     const confirmedCount = existingTeams.filter(t => !t.isWaitlist).length;
     const waitlistCount = existingTeams.filter(t => t.isWaitlist).length;
@@ -3552,8 +4977,8 @@ class DiscordBotManager {
     this.markMembersInFlight(allMemberIds, true);
 
     try {
-      await this.withOperationLock(async () => {
-        const latestTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : existingTeams;
+      const allocationResult = await this.withOperationLock(async () => {
+        const latestTeams = this.getTeamsForTournament(config);
         const lockValidation = this.validateTeamRegistrationRoster({
           teamName,
           captainId: message.author.id,
@@ -3562,8 +4987,10 @@ class DiscordBotManager {
           existingTeams: latestTeams
         });
         if (!lockValidation.valid && lockValidation.code !== 'MEMBER_IN_FLIGHT') {
-          await this.sendErrorAndAutoDelete(message, lockValidation.error || 'Registration validation failed.');
-          return;
+          return {
+            ok: false as const,
+            error: lockValidation.error || 'Registration validation failed.'
+          };
         }
 
         const currentConfirmed = latestTeams.filter(t => !t.isWaitlist);
@@ -3603,6 +5030,7 @@ class DiscordBotManager {
 
         const newTeam: any = {
           id: `team-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          tournamentId: config.id || undefined,
           slotNumber,
           teamName,
           captain: {
@@ -3618,7 +5046,7 @@ class DiscordBotManager {
           isWaitlist,
           group: assignedGroup,
           teamRoleName: teamName,
-          teamCategoryName: teamName,
+          teamCategoryName: 'Team Voice Lobbies',
           teamVoiceChannelName: teamName,
           whatsappNumber1: parsedWhatsapp1,
           region: parsedRegion
@@ -3627,67 +5055,87 @@ class DiscordBotManager {
         if (this.onTeamRegistered) {
           this.onTeamRegistered(newTeam);
         }
-        latestTeams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
+        const updatedTeams = this.getTeamsForTournament(config);
+        const updatedConfirmedCount = updatedTeams.filter(t => !t.isWaitlist).length;
 
-        this.logEvent(
-          'success',
-          `✅ Slot ${isWaitlist ? `WL #${slotNumber}` : `#${slotNumber} (${assignedGroup})`} confirmed for Team "${teamName}" (Captain: @${newTeam.captain.displayName}, ${playersList.length} tags verified)`,
-          message.guild?.name
-        );
-
-        await message.react('✅').catch(() => {});
-
-        if (message.guild) {
-          await this.syncTeamRolesForRegistration(message.guild, newTeam, config);
-        }
-
-        const idpChannel = message.guild?.channels.cache.find(
-          c => c.name === config.idpChannel || c.name === '🔑┃id-pass' || c.name === 'id-pass'
-        );
-
-        const updatedConfirmedCount = latestTeams.filter(t => !t.isWaitlist).length;
-        const embed = new EmbedBuilder()
-          .setTitle(isWaitlist ? '⏳ Added to Waiting List' : '✅ Tournament Registration Confirmed!')
-          .setColor(isWaitlist ? 0xFEE75C : 0x57F287)
-          .setDescription(
-            isWaitlist
-              ? `Team **${teamName}** secured **Waitlist #${slotNumber}**.`
-              : `Congratulations! **${teamName}** has secured **Slot #${slotNumber}** for **${config.title}**!`
-          )
-          .addFields(
-            { name: 'Team Name', value: `\`${teamName}\``, inline: true },
-            { name: isWaitlist ? 'Waitlist Position' : 'Allocated Slot', value: isWaitlist ? `\`#WL-${slotNumber}\`` : `\`Slot #${slotNumber}\` (${assignedGroup})`, inline: true },
-            { name: 'Remaining Slots', value: `\`${Math.max(0, config.totalSlots - updatedConfirmedCount)}\``, inline: true },
-            { name: 'Region', value: `\`${newTeam.region || 'India'}\``, inline: true },
-            { name: 'WhatsApp No', value: newTeam.whatsappNumber1 ? `\`${newTeam.whatsappNumber1}\`` : '`Not provided`', inline: true },
-            { name: 'Captain', value: `<@${newTeam.captain.id}>`, inline: true },
-            { name: 'Roster Tags (Voice Role Granted)', value: taggedUserIds.map((id, i) => `${i + 1}. <@${id}>`).join('\n') },
-            {
-              name: 'Voice Channel Role & Tourney Role',
-              value: `${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``}${isWaitlist ? ' *(Waitlist)*' : ` • \`@${config.verifiedRoleName || 'Verified Team'}\``}`,
-              inline: true
-            },
-            {
-              name: 'Team Category & Private VC',
-              value: newTeam.teamVoiceChannelId
-                ? `📁 **${newTeam.teamCategoryName || teamName}**\n🔊 <#${newTeam.teamVoiceChannelId}> *(All team members granted ${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``} to join)*`
-                : `📁 **${teamName}**\n🔊 \`${teamName}\` *(Private Team VC)*`,
-              inline: true
-            },
-            { name: 'Private Room', value: idpChannel ? `<#${idpChannel.id}> *(Credentials before match)*` : 'Unlocked `#id-pass`', inline: false }
-          )
-          .setFooter({ text: 'FFA | Glacier Cup Manager™ • Voice Channel Role granted to all team members' })
-          .setTimestamp();
-
-        const components =
-          message.guild && newTeam.teamVoiceChannelId
-            ? [this.createVoiceConnectButtonRow(message.guild.id, newTeam.teamVoiceChannelId, newTeam.teamVoiceChannelName || teamName)]
-            : [];
-
-        await message.reply({ embeds: [embed], components }).catch(() => {});
-
-        await this.syncGuildChannels(config, message.guild);
+        return {
+          ok: true as const,
+          newTeam,
+          slotNumber,
+          isWaitlist,
+          assignedGroup,
+          updatedConfirmedCount
+        };
       });
+
+      if (!allocationResult.ok) {
+        await this.sendErrorAndAutoDelete(message, allocationResult.error);
+        return;
+      }
+
+      const { newTeam, slotNumber, isWaitlist, assignedGroup, updatedConfirmedCount } = allocationResult;
+
+      this.logEvent(
+        'success',
+        `✅ Slot ${isWaitlist ? `WL #${slotNumber}` : `#${slotNumber} (${assignedGroup})`} confirmed for Team "${teamName}" (Captain: @${newTeam.captain.displayName}, ${playersList.length} tags verified)`,
+        message.guild?.name
+      );
+
+      await message.react('✅').catch(() => {});
+
+      if (message.guild) {
+        await this.syncTeamRolesForRegistration(message.guild, newTeam, config).catch(() => {});
+      }
+
+      const idpChannel = message.guild ? this.resolveIdpChannel(message.guild, config) : undefined;
+
+      const embed = new EmbedBuilder()
+        .setTitle(isWaitlist ? `${EMOJI.alert} Added to Waiting List` : `${EMOJI.done} Tournament Registration Confirmed!`)
+        .setColor(isWaitlist ? 0xFEE75C : 0x57F287)
+        .setDescription(
+          (isWaitlist
+            ? `${EMOJI.sword} Team **${teamName}** secured **Waitlist #${slotNumber}**.`
+            : `${EMOJI.giveaway} Congratulations! **${teamName}** has secured **Slot #${slotNumber}** for **${config.title}**!`) +
+          `\n${EMOJI.dividerBar}`
+        )
+        .addFields(
+          { name: `${EMOJI.sword} Team Name`, value: `\`${teamName}\``, inline: true },
+          { name: isWaitlist ? `${EMOJI.alert} Waitlist Position` : `${EMOJI.golden} Allocated Slot`, value: isWaitlist ? `\`#WL-${slotNumber}\`` : `\`Slot #${slotNumber}\` (${assignedGroup})`, inline: true },
+          { name: `${EMOJI.giveaway} Remaining Slots`, value: `\`${Math.max(0, config.totalSlots - updatedConfirmedCount)}\``, inline: true },
+          { name: `${EMOJI.golden} Region`, value: `\`${newTeam.region || 'India'}\``, inline: true },
+          { name: `${EMOJI.admin} WhatsApp No`, value: newTeam.whatsappNumber1 ? `\`${newTeam.whatsappNumber1}\`` : '`Not provided`', inline: true },
+          { name: `${EMOJI.golden} Captain`, value: `<@${newTeam.captain.id}>`, inline: true },
+          { name: `${EMOJI.done} Roster Tags (Voice Role Granted)`, value: taggedUserIds.map((id, i) => `${EMOJI.sword} \`${i + 1}.\` <@${id}>`).join('\n') },
+          {
+            name: `${EMOJI.admin} Voice Channel Role & Tourney Role`,
+            value: `${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``}${isWaitlist ? ' *(Waitlist)*' : ` • \`@${config.verifiedRoleName || 'Verified Team'}\``}`,
+            inline: true
+          },
+          {
+            name: `${EMOJI.golden} Team Category & Private VC`,
+            value: newTeam.teamVoiceChannelId
+              ? `📁 **${newTeam.teamCategoryName || 'Team Voice Lobbies'}**\n🔊 <#${newTeam.teamVoiceChannelId}> *(All team members granted ${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``} to join)*`
+              : `📁 **Team Voice Lobbies**\n🔊 \`${teamName}\` *(Private Team VC)*`,
+            inline: true
+          },
+          { name: `${EMOJI.giveaway} Match Room Channel`, value: idpChannel ? `<#${idpChannel.id}> *(Credentials before match)*` : '`#tournament-idp` *(Credentials before match)*', inline: false }
+        )
+        .setFooter({ text: 'FFA | Glacier Cup Manager™ • Voice Channel Role granted to all team members' })
+        .setTimestamp();
+
+      const voiceConnectUrl =
+        message.guild && newTeam.teamVoiceChannelId
+          ? await this.resolveVoiceConnectUrl(message.guild, newTeam.teamVoiceChannelId, newTeam.teamVoiceInviteUrl)
+          : undefined;
+
+      const components =
+        message.guild && newTeam.teamVoiceChannelId
+          ? [this.createVoiceConnectButtonRow(message.guild.id, newTeam.teamVoiceChannelId, newTeam.teamVoiceChannelName || teamName, voiceConnectUrl)]
+          : [];
+
+      await message.reply({ embeds: [embed], components }).catch(() => {});
+
+      await this.syncGuildChannels(config, message.guild).catch(() => {});
     } finally {
       this.markMembersInFlight(allMemberIds, false);
     }
@@ -3706,21 +5154,14 @@ class DiscordBotManager {
       config.status = 'open';
     }
 
-    if (config.status === 'paused' && config.explicitlyStoppedOrPaused) {
-      await interaction.editReply(
-        '⏸️ Registrations are currently **PAUSED** by tournament staff. Please wait for staff to resume registration with `/start-registration`.'
-      );
-      return;
-    }
-
     if (config.status === 'closed' && config.explicitlyStoppedOrPaused) {
       await interaction.editReply(
-        '🔴 Registrations are currently **CLOSED**. Please wait for tournament staff to run `/start-registration`.'
+        '🔴 Registrations are currently **CLOSED** (stopped by tournament staff).'
       );
       return;
     }
 
-    const existingTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+    const existingTeams = this.getTeamsForTournament(config);
     const confirmedCount = existingTeams.filter(t => !t.isWaitlist).length;
     const waitlistCount = existingTeams.filter(t => t.isWaitlist).length;
 
@@ -3918,8 +5359,14 @@ class DiscordBotManager {
     this.markMembersInFlight(allMemberIds, true);
 
     try {
-      await this.withOperationLock(async () => {
-        const latestTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : existingTeams;
+      let registeredNewTeam: any = null;
+      let isWaitlist = false;
+      let slotNumber = 1;
+      let assignedGroup: string | undefined = undefined;
+      let updatedConfirmedCount = 0;
+
+      const lockOutcome = await this.withOperationLock(async () => {
+        const latestTeams = this.getTeamsForTournament(config);
         const lockValidation = this.validateTeamRegistrationRoster({
           teamName,
           captainId: interaction.user.id,
@@ -3928,15 +5375,14 @@ class DiscordBotManager {
           existingTeams: latestTeams
         });
         if (!lockValidation.valid && lockValidation.code !== 'MEMBER_IN_FLIGHT') {
-          await interaction.editReply(`❌ **${lockValidation.error || 'Registration validation failed.'}**`);
-          return;
+          return { valid: false, error: lockValidation.error || 'Registration validation failed.' };
         }
 
         const currentConfirmed = latestTeams.filter(t => !t.isWaitlist);
         const currentWaitlist = latestTeams.filter(t => t.isWaitlist);
-        const isWaitlist = currentConfirmed.length >= config.totalSlots;
+        isWaitlist = currentConfirmed.length >= config.totalSlots;
 
-        let slotNumber = 1;
+        slotNumber = 1;
         if (isWaitlist) {
           slotNumber = currentWaitlist.length + 1;
         } else {
@@ -3946,10 +5392,11 @@ class DiscordBotManager {
           }
         }
 
-        const assignedGroup = isWaitlist ? undefined : this.calculateGroupForSlot(slotNumber, config);
+        assignedGroup = isWaitlist ? undefined : this.calculateGroupForSlot(slotNumber, config);
 
-        const newTeam: any = {
+        registeredNewTeam = {
           id: `team-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          tournamentId: config.id || undefined,
           slotNumber,
           teamName,
           captain: {
@@ -3965,115 +5412,136 @@ class DiscordBotManager {
           isWaitlist,
           group: assignedGroup,
           teamRoleName: teamName,
-          teamCategoryName: teamName,
+          teamCategoryName: 'Team Voice Lobbies',
           teamVoiceChannelName: teamName,
           whatsappNumber1: cleanWa1,
           region: parsedRegion
         };
 
         if (this.onTeamRegistered) {
-          this.onTeamRegistered(newTeam);
+          this.onTeamRegistered(registeredNewTeam);
         }
-        latestTeams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
+        const updatedTeams = this.getTeamsForTournament(config);
+        updatedConfirmedCount = updatedTeams.filter(t => !t.isWaitlist).length;
         this.pendingRegistrationDrafts.delete(interaction.user.id);
 
-        this.logEvent(
-          'success',
-          `✅ Slot ${isWaitlist ? `WL #${slotNumber}` : `#${slotNumber} (${assignedGroup})`} confirmed via Registration Panel for Team "${teamName}" (${parsedRegion}, Captain: @${newTeam.captain.displayName}, ${playersList.length} tags verified)`,
-          interaction.guild?.name
-        );
+        return { valid: true };
+      });
 
-        if (interaction.guild) {
-          await this.syncTeamRolesForRegistration(interaction.guild, newTeam, config);
-        }
+      if (!lockOutcome.valid || !registeredNewTeam) {
+        await interaction.editReply(`❌ **${lockOutcome.error || 'Registration validation failed.'}**`);
+        return;
+      }
 
-        const idpChannel = interaction.guild?.channels.cache.find(
-          c => c.name === config.idpChannel || c.name === '🔑┃id-pass' || c.name === 'id-pass'
-        );
+      const newTeam = registeredNewTeam;
 
-        const updatedConfirmedCount = latestTeams.filter(t => !t.isWaitlist).length;
-        const privateConfirmEmbed = new EmbedBuilder()
-          .setTitle(isWaitlist ? '⏳ Added to Waiting List' : '✅ Tournament Registration Confirmed!')
-          .setColor(isWaitlist ? 0xFEE75C : 0x57F287)
-          .setDescription(
-            isWaitlist
-              ? `Team **${teamName}** secured **Waitlist #${slotNumber}**.`
-              : `Congratulations! **${teamName}** has secured **Slot #${slotNumber}** for **${config.title}**!`
+      this.logEvent(
+        'success',
+        `✅ Slot ${isWaitlist ? `WL #${slotNumber}` : `#${slotNumber} (${assignedGroup})`} confirmed via Registration Panel for Team "${teamName}" (${parsedRegion}, Captain: @${newTeam.captain.displayName}, ${playersList.length} tags verified)`,
+        interaction.guild?.name
+      );
+
+      if (interaction.guild) {
+        await this.syncTeamRolesForRegistration(interaction.guild, newTeam, config).catch(() => {});
+      }
+
+      const idpChannel = interaction.guild ? this.resolveIdpChannel(interaction.guild, config) : undefined;
+
+      const privateConfirmEmbed = new EmbedBuilder()
+        .setTitle(isWaitlist ? `${EMOJI.alert} Added to Waiting List` : `${EMOJI.done} Tournament Registration Confirmed!`)
+        .setColor(isWaitlist ? 0xFEE75C : 0x57F287)
+        .setDescription(
+          (isWaitlist
+            ? `${EMOJI.sword} Team **${teamName}** secured **Waitlist #${slotNumber}**.`
+            : `${EMOJI.giveaway} Congratulations! **${teamName}** has secured **Slot #${slotNumber}** for **${config.title}**!`) +
+          `\n${EMOJI.dividerBar}`
+        )
+        .addFields(
+          { name: `${EMOJI.sword} Team Name`, value: `\`${teamName}\``, inline: true },
+          { name: isWaitlist ? `${EMOJI.alert} Waitlist Position` : `${EMOJI.golden} Allocated Slot`, value: isWaitlist ? `\`#WL-${slotNumber}\`` : `\`Slot #${slotNumber}\` (${assignedGroup})`, inline: true },
+          { name: `${EMOJI.giveaway} Remaining Slots`, value: `\`${Math.max(0, config.totalSlots - updatedConfirmedCount)}\``, inline: true },
+          { name: `${EMOJI.golden} Region`, value: `\`${newTeam.region || 'India'}\``, inline: true },
+          { name: `${EMOJI.admin} WhatsApp No`, value: newTeam.whatsappNumber1 ? `\`${newTeam.whatsappNumber1}\`` : '`Not provided`', inline: true },
+          { name: `${EMOJI.golden} Captain`, value: `<@${newTeam.captain.id}>`, inline: true },
+          { name: `${EMOJI.done} Roster Tags (Voice Role Granted)`, value: taggedUserIds.map((id, i) => `${EMOJI.sword} \`${i + 1}.\` <@${id}>`).join('\n') },
+          {
+            name: `${EMOJI.admin} Voice Channel Role & Tourney Role`,
+            value: `${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``}${isWaitlist ? ' *(Waitlist)*' : ` • \`@${config.verifiedRoleName || 'Verified Team'}\``}`,
+            inline: true
+          },
+          {
+            name: `${EMOJI.golden} Team Category & Private VC`,
+            value: newTeam.teamVoiceChannelId
+              ? `📁 **${newTeam.teamCategoryName || 'Team Voice Lobbies'}**\n🔊 <#${newTeam.teamVoiceChannelId}> *(All team members granted ${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``} to join)*`
+              : `📁 **Team Voice Lobbies**\n🔊 \`${teamName}\` *(Private Team VC)*`,
+            inline: true
+          },
+          { name: `${EMOJI.giveaway} Match Room Channel`, value: idpChannel ? `<#${idpChannel.id}> *(Credentials before match)*` : '`#tournament-idp` *(Credentials before match)*', inline: false }
+        )
+        .setFooter({ text: 'FFA | Glacier Cup Manager™ • Voice Channel Role granted to all team members' })
+        .setTimestamp();
+
+      const voiceConnectUrl =
+        interaction.guild && newTeam.teamVoiceChannelId
+          ? await this.resolveVoiceConnectUrl(interaction.guild, newTeam.teamVoiceChannelId, newTeam.teamVoiceInviteUrl)
+          : undefined;
+
+      const privateComponents: ActionRowBuilder<ButtonBuilder>[] = [];
+      if (interaction.guild && newTeam.teamVoiceChannelId) {
+        privateComponents.push(
+          this.createVoiceConnectButtonRow(
+            interaction.guild.id,
+            newTeam.teamVoiceChannelId,
+            newTeam.teamVoiceChannelName || teamName,
+            voiceConnectUrl
           )
-          .addFields(
-            { name: 'Team Name', value: `\`${teamName}\``, inline: true },
-            { name: isWaitlist ? 'Waitlist Position' : 'Allocated Slot', value: isWaitlist ? `\`#WL-${slotNumber}\`` : `\`Slot #${slotNumber}\` (${assignedGroup})`, inline: true },
-            { name: 'Remaining Slots', value: `\`${Math.max(0, config.totalSlots - updatedConfirmedCount)}\``, inline: true },
-            { name: 'Region', value: `\`${newTeam.region || 'India'}\``, inline: true },
-            { name: 'WhatsApp No', value: newTeam.whatsappNumber1 ? `\`${newTeam.whatsappNumber1}\`` : '`Not provided`', inline: true },
-            { name: 'Captain', value: `<@${newTeam.captain.id}>`, inline: true },
-            { name: 'Roster Tags (Voice Role Granted)', value: taggedUserIds.map((id, i) => `${i + 1}. <@${id}>`).join('\n') },
-            {
-              name: 'Voice Channel Role & Tourney Role',
-              value: `${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``}${isWaitlist ? ' *(Waitlist)*' : ` • \`@${config.verifiedRoleName || 'Verified Team'}\``}`,
-              inline: true
-            },
-            {
-              name: 'Team Category & Private VC',
-              value: newTeam.teamVoiceChannelId
-                ? `📁 **${newTeam.teamCategoryName || teamName}**\n🔊 <#${newTeam.teamVoiceChannelId}> *(All team members granted ${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``} to join)*`
-                : `📁 **${teamName}**\n🔊 \`${teamName}\` *(Private Team VC)*`,
-              inline: true
-            },
-            { name: 'Private Room', value: idpChannel ? `<#${idpChannel.id}> *(Credentials before match)*` : 'Unlocked `#id-pass`', inline: false }
-          )
-          .setFooter({ text: 'FFA | Glacier Cup Manager™ • Voice Channel Role granted to all team members' })
-          .setTimestamp();
+        );
+      }
+      privateComponents.push(this.createCaptainControlsRow(newTeam, config));
 
-        const components =
-          interaction.guild && newTeam.teamVoiceChannelId
-            ? [this.createVoiceConnectButtonRow(interaction.guild.id, newTeam.teamVoiceChannelId, newTeam.teamVoiceChannelName || teamName)]
+      await interaction.editReply({ embeds: [privateConfirmEmbed], components: privateComponents });
+
+      if (interaction.guild) {
+        const regCh =
+          this.resolveRegistrationChannel(interaction.guild, config) ||
+          (interaction.channelId ? (interaction.guild.channels.cache.get(interaction.channelId) as TextChannel | undefined) : undefined);
+
+        if (regCh) {
+          const publicEmbed = new EmbedBuilder()
+            .setTitle(isWaitlist ? `${EMOJI.alert} Team Added to Waiting List` : `${EMOJI.done} Team Registration Confirmed!`)
+            .setColor(isWaitlist ? 0xFEE75C : 0x57F287)
+            .setDescription(
+              (isWaitlist
+                ? `${EMOJI.sword} **${teamName}** (<@${interaction.user.id}>) secured **Waitlist #${slotNumber}**.`
+                : `${EMOJI.giveaway} **${teamName}** (<@${interaction.user.id}>) has secured **Slot #${slotNumber}** (${assignedGroup}) for **${config.title}**!`) +
+              `\n${EMOJI.dividerBar}`
+            )
+            .addFields(
+              { name: `${EMOJI.sword} Team Name`, value: `\`${teamName}\``, inline: true },
+              { name: isWaitlist ? `${EMOJI.alert} Waitlist Position` : `${EMOJI.golden} Allocated Slot`, value: isWaitlist ? `\`#WL-${slotNumber}\`` : `\`Slot #${slotNumber}\` (${assignedGroup})`, inline: true },
+              { name: `${EMOJI.giveaway} Remaining Slots`, value: `\`${Math.max(0, config.totalSlots - updatedConfirmedCount)}\``, inline: true },
+              { name: `${EMOJI.golden} Region`, value: `\`${newTeam.region || 'India'}\``, inline: true },
+              {
+                name: `${EMOJI.admin} Voice Channel & Role`,
+                value: newTeam.teamVoiceChannelId
+                  ? `🔊 <#${newTeam.teamVoiceChannelId}> (${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``})`
+                  : `\`@${newTeam.teamRoleName || teamName}\``,
+                inline: true
+              },
+              { name: `${EMOJI.done} Roster Tags (Voice Role Assigned)`, value: taggedUserIds.map((id, i) => `${EMOJI.sword} \`${i + 1}.\` <@${id}>`).join('\n'), inline: false }
+            )
+            .setFooter({ text: 'FFA | Glacier Cup Manager™ • Registration remains open until /stop-registration' })
+            .setTimestamp();
+
+          const publicComponents = newTeam.teamVoiceChannelId
+            ? [this.createVoiceConnectButtonRow(interaction.guild.id, newTeam.teamVoiceChannelId, newTeam.teamVoiceChannelName || teamName, voiceConnectUrl)]
             : [];
 
-        await interaction.editReply({ embeds: [privateConfirmEmbed], components });
-
-        if (interaction.guild) {
-          const regCh = interaction.guild.channels.cache.find(
-            c =>
-              c.isTextBased() &&
-              (c.id === interaction.channelId ||
-                c.name === config.regChannel ||
-                c.name === '📝┃registration' ||
-                c.name === 'registration')
-          ) as TextChannel | undefined;
-
-          if (regCh) {
-            const publicEmbed = new EmbedBuilder()
-              .setTitle(isWaitlist ? '⏳ Team Added to Waiting List' : '✅ Team Registration Confirmed!')
-              .setColor(isWaitlist ? 0xFEE75C : 0x57F287)
-              .setDescription(
-                isWaitlist
-                  ? `**${teamName}** (<@${interaction.user.id}>) secured **Waitlist #${slotNumber}**.`
-                  : `**${teamName}** (<@${interaction.user.id}>) has secured **Slot #${slotNumber}** (${assignedGroup}) for **${config.title}**!`
-              )
-              .addFields(
-                { name: 'Team Name', value: `\`${teamName}\``, inline: true },
-                { name: isWaitlist ? 'Waitlist Position' : 'Allocated Slot', value: isWaitlist ? `\`#WL-${slotNumber}\`` : `\`Slot #${slotNumber}\` (${assignedGroup})`, inline: true },
-                { name: 'Remaining Slots', value: `\`${Math.max(0, config.totalSlots - updatedConfirmedCount)}\``, inline: true },
-                { name: 'Region', value: `\`${newTeam.region || 'India'}\``, inline: true },
-                {
-                  name: 'Voice Channel & Role',
-                  value: newTeam.teamVoiceChannelId
-                    ? `🔊 <#${newTeam.teamVoiceChannelId}> (${newTeam.teamRoleId ? `<@&${newTeam.teamRoleId}>` : `\`@${newTeam.teamRoleName || teamName}\``})`
-                    : `\`@${newTeam.teamRoleName || teamName}\``,
-                  inline: true
-                },
-                { name: 'Roster Tags (Voice Role Assigned)', value: taggedUserIds.map((id, i) => `${i + 1}. <@${id}>`).join('\n'), inline: false }
-              )
-              .setFooter({ text: 'FFA | Glacier Cup Manager™ • Team members received the Team Voice Role to join VC' })
-              .setTimestamp();
-
-            await regCh.send({ embeds: [publicEmbed], components }).catch(() => {});
-          }
+          await regCh.send({ embeds: [publicEmbed], components: publicComponents }).catch(() => {});
         }
+      }
 
-        await this.syncGuildChannels(config, interaction.guild);
-      });
+      await this.syncGuildChannels(config, interaction.guild).catch(() => {});
     } finally {
       this.markMembersInFlight(allMemberIds, false);
     }
@@ -4081,19 +5549,23 @@ class DiscordBotManager {
 
   private scheduleSlotListUpdate(guild: any, config: any) {
     if (!guild) return;
-    const existingTimer = this.slotListUpdateTimers.get(guild.id);
+    const timerKey = `${guild.id}:${config?.id || 'default'}`;
+    const existingTimer = this.slotListUpdateTimers.get(timerKey);
     if (existingTimer) {
       clearTimeout(existingTimer);
     }
     const timer = setTimeout(() => {
-      this.slotListUpdateTimers.delete(guild.id);
+      this.slotListUpdateTimers.delete(timerKey);
       this.updateSlotListChannel(guild, config).catch(() => {});
     }, 600);
-    this.slotListUpdateTimers.set(guild.id, timer);
+    this.slotListUpdateTimers.set(timerKey, timer);
   }
 
-  private async sendErrorAndAutoDelete(message: Message, errorMsg: string) {
-    const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
+  private async sendErrorAndAutoDelete(message: Message, errorMsg: string, tournamentConfig?: any) {
+    const config =
+      tournamentConfig ||
+      this.resolveTournamentContext(message.guild, message.channel.id) ||
+      (this.getTournamentConfig ? this.getTournamentConfig() : null);
     const autoDeleteEnabled = config?.autoDeleteInvalid !== false;
     const delaySeconds = Math.max(2, Math.min(30, config?.autoDeleteSeconds || 8));
 
@@ -4102,24 +5574,24 @@ class DiscordBotManager {
     const formatExample = `Team Name: Glacier Titans\nRegion: India\nWhatsApp: +91XXXXXXXXXX\n${playerLines}`;
 
     const embed = new EmbedBuilder()
-      .setTitle('❌ Registration Rejected — Tagcheck Notice')
+      .setTitle(`${EMOJI.alert} Registration Rejected — Tagcheck Notice`)
       .setColor(0xED4245)
-      .setDescription(errorMsg)
+      .setDescription(`${errorMsg}\n${EMOJI.dividerBar}`)
       .addFields(
         {
-          name: '📋 Required Format',
+          name: `${EMOJI.golden} Required Format`,
           value: `\`\`\`text\n${formatExample}\n\`\`\`\n*(Replace \`Glacier Titans\` with your actual team name)*`,
           inline: false
         },
         {
-          name: '💡 EasyTag Tip',
+          name: `${EMOJI.sword} EasyTag Tip`,
           value: 'Select usernames from Discord\'s `@` popup, or paste valid 17–20 digit Discord User IDs directly.',
           inline: false
         }
       )
       .setFooter({
         text: autoDeleteEnabled
-          ? `This notice and your message will auto-delete in ${delaySeconds} seconds to keep #registration clean.`
+          ? `This notice and your message will auto-delete in ${delaySeconds} seconds to keep #tournament-registration clean.`
           : 'Please correct your format and submit again.'
       });
 
@@ -4144,14 +5616,14 @@ class DiscordBotManager {
     const title = config?.title || 'Glacier Cup';
 
     const headerInfo =
-      `🔒 **Confidential Staff Roster & Contact Directory** *(Visible only to \`@${managerRoleName}\`)*\n` +
-      `**Confirmed Teams:** \`${confirmed.length} / ${totalSlots}\` • **Waitlist:** \`${waitlist.length}\` • **Required Tags:** \`${reqTags}\`\n` +
-      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+      `${EMOJI.admin} **Confidential Staff Roster & Contact Directory** *(Visible only to \`@${managerRoleName}\`)*\n` +
+      `${EMOJI.done} **Confirmed Teams:** \`${confirmed.length} / ${totalSlots}\` • ${EMOJI.alert} **Waitlist:** \`${waitlist.length}\` • ${EMOJI.sword} **Required Tags:** \`${reqTags}\`\n` +
+      `${EMOJI.dividerBar}`;
 
     if (confirmed.length === 0 && waitlist.length === 0) {
       return [
         new EmbedBuilder()
-          .setTitle(`📋 ${title} — Registration Details (Sequence View)`)
+          .setTitle(`${EMOJI.admin} ${title} — Registration Details (Sequence View)`)
           .setColor(0xF59E0B)
           .setDescription(`${headerInfo}\n\n*No teams registered yet. As teams submit registrations, their full details (Team Name, Region, WhatsApp Number, and Players Tags) will appear here in strict slot sequence.*`)
           .setFooter({ text: `Restricted to @${managerRoleName} • FFA | Glacier Cup Manager™` })
@@ -4162,10 +5634,10 @@ class DiscordBotManager {
     const formatTeamEntry = (t: any, isWl: boolean) => {
       const slotStr = t.slotNumber < 10 ? `0${t.slotNumber}` : `${t.slotNumber}`;
       const assignedGroup = isWl ? 'Waitlist' : (t.group || this.calculateGroupForSlot(t.slotNumber, config));
-      const statusLabel = isWl ? '⏳ Waitlisted' : '✅ Confirmed';
+      const statusLabel = isWl ? `${EMOJI.alert} Waitlisted` : `${EMOJI.done} Confirmed`;
       const badge = isWl
-        ? `⏳ **WAITLIST #${slotStr}** • **Status:** \`${statusLabel}\``
-        : `🔢 **SLOT #${slotStr}** • **${assignedGroup}** • **Status:** \`${statusLabel}\``;
+        ? `${EMOJI.alert} **WAITLIST #${slotStr}** • **Status:** ${statusLabel}`
+        : `${EMOJI.golden} **SLOT #${slotStr}** • **${assignedGroup}** • **Status:** ${statusLabel}`;
       const regionStr = t.region || 'India';
       const wpStr = t.whatsappNumber1 || 'Not provided';
       const capId = this.normalizeMemberId(t.captain?.id);
@@ -4186,10 +5658,10 @@ class DiscordBotManager {
           : '*None*';
       return (
         `${badge}\n` +
-        `┣ 🏆 **Team Name:** \`${t.teamName}\` (${isWl ? `Waitlist #${slotStr}` : `Slot #${slotStr} • ${assignedGroup}`})\n` +
-        `┣ 👑 **Captain:** ${captainMention}\n` +
-        `┣ 👥 **Registered Players (${(t.players || []).length}):** ${playerMentions}\n` +
-        `┗ 🌍 **Region & Contact:** \`${regionStr}\` • 📱 \`${wpStr}\``
+        `┣ ${EMOJI.sword} **Team Name:** \`${t.teamName}\` (${isWl ? `Waitlist #${slotStr}` : `Slot #${slotStr} • ${assignedGroup}`})\n` +
+        `┣ ${EMOJI.golden} **Captain:** ${captainMention}\n` +
+        `┣ ${EMOJI.done} **Registered Players (${(t.players || []).length}):** ${playerMentions}\n` +
+        `┗ ${EMOJI.admin} **Region & Contact:** \`${regionStr}\` • 📱 \`${wpStr}\``
       );
     };
 
@@ -4216,8 +5688,8 @@ class DiscordBotManager {
       const embed = new EmbedBuilder()
         .setTitle(
           idx === 0
-            ? `📋 ${title} — Registration Details (Sequence #01–#${confirmed.length < 10 ? '0' + confirmed.length : confirmed.length})`
-            : `📋 ${title} — Registration Details (Continued #${idx + 1})`
+            ? `${EMOJI.admin} ${title} — Registration Details (Sequence #01–#${confirmed.length < 10 ? '0' + confirmed.length : confirmed.length})`
+            : `${EMOJI.admin} ${title} — Registration Details (Continued #${idx + 1})`
         )
         .setColor(0xF59E0B)
         .setDescription(idx === 0 ? `${headerInfo}\n\n${chunk}` : chunk);
@@ -4233,83 +5705,28 @@ class DiscordBotManager {
   public async updateRegistrationDetailsChannel(guild: any, config: any): Promise<{ updated: boolean; error?: string }> {
     if (!guild || !config) return { updated: false, error: 'No guild or config provided' };
 
-    const targetChannelName = config.regDetailsChannel || '🔒┃registration-details';
-    let channel = guild.channels.cache.find(
-      (c: any) =>
-        c.isTextBased() &&
-        (c.name === targetChannelName ||
-          c.name === '🔒┃registration-details' ||
-          c.name === '📋┃registration-details' ||
-          c.name === 'registration-details')
-    ) as TextChannel | undefined;
+    const targetChannelName = config.regDetailsChannel || 'registration-details';
+    let channel = this.resolveRegDetailsChannel(guild, config);
+    const category = this.resolveTournamentCategory(guild, config);
 
-    if (!channel) {
-      const botMember = guild.members.me;
-      const canManageChannels =
-        botMember?.permissions.has(PermissionsBitField.Flags.Administrator) ||
-        botMember?.permissions.has(PermissionsBitField.Flags.ManageChannels);
-
-      if (canManageChannels) {
-        const managerRoleName = (config.managerRoleName || 'FFA Bot Manager').trim().toLowerCase();
-        const managerRole = guild.roles.cache.find(
-          (r: any) => r.name.trim().toLowerCase() === managerRoleName || r.name.trim().toLowerCase() === 'ffa bot manager'
-        );
-        const category = guild.channels.cache.find(
-          (c: any) =>
-            c.type === ChannelType.GuildCategory &&
-            ((config.categoryName && c.name.toLowerCase() === config.categoryName.toLowerCase()) ||
-              c.name.toLowerCase().includes('tournament') ||
-              c.name.toLowerCase().includes('scrim'))
-        ) as CategoryChannel | undefined;
-
-        const overwrites: any[] = [
-          {
-            id: guild.roles.everyone.id,
-            deny: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages]
-          }
-        ];
-        if (managerRole) {
-          overwrites.push({
-            id: managerRole.id,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.ReadMessageHistory,
-              PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.ManageMessages
-            ]
-          });
-        }
-        if (botMember) {
-          overwrites.push({
-            id: botMember.id,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.EmbedLinks,
-              PermissionsBitField.Flags.ManageMessages,
-              PermissionsBitField.Flags.ReadMessageHistory
-            ]
-          });
-        }
-
-        try {
-          channel = await guild.channels.create({
-            name: targetChannelName,
-            type: ChannelType.GuildText,
-            parent: category?.id,
-            topic: `Confidential team registration details (Team Name, Region, WhatsApp, Players Tags) — Visible only to @${config.managerRoleName || 'FFA Bot Manager'}`,
-            permissionOverwrites: overwrites
-          });
-          config.regDetailsChannel = targetChannelName;
-        } catch {
-          return { updated: false, error: `Could not create #${targetChannelName}` };
-        }
-      } else {
-        return { updated: false, error: `#${targetChannelName} channel not found` };
+    // If channel exists but has no category (sitting separately), heal or remove it
+    if (channel) {
+      if (category && channel.parentId !== category.id) {
+        await channel.setParent(category.id, { lockPermissions: false }).catch(() => {});
+      } else if (!category && !channel.parentId) {
+        await channel.delete('Removing stray unparented registration-details channel').catch(() => {});
+        config.regDetailsChannelId = '';
+        if (this.onConfigUpdated) this.onConfigUpdated();
+        return { updated: false, error: 'Cleaned up unparented registration-details channel' };
       }
     }
+
+    if (!channel) {
+      // Never auto-create registration-details channel in background updates
+      return { updated: false, error: `#${targetChannelName} channel not configured` };
+    }
     if (channel === undefined || channel === null) return { updated: false };
-    const existingTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+    const existingTeams = this.getTeamsForTournament(config);
     const confirmed = existingTeams.filter(t => !t.isWaitlist);
     const waitlist = existingTeams.filter(t => t.isWaitlist);
     const embeds = this.formatRegistrationDetailsEmbeds(confirmed, waitlist, config);
@@ -4364,12 +5781,10 @@ class DiscordBotManager {
   public async updateSlotListChannel(guild: any, config: any): Promise<{ updated: boolean; error?: string }> {
     if (!guild) return { updated: false, error: 'No guild provided' };
     await this.updateRegistrationDetailsChannel(guild, config).catch(() => {});
-    const channel = guild.channels.cache.find(
-      (c: any) => (c.name === config.slotListChannel || c.name === '📊┃slot-list' || c.name === 'slot-list') && c.isTextBased()
-    ) as TextChannel | undefined;
+    const channel = this.resolveSlotListChannel(guild, config);
     if (!channel) return { updated: false, error: `#${config.slotListChannel || 'slot-list'} channel not found` };
 
-    const existingTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+    const existingTeams = this.getTeamsForTournament(config);
     const confirmed = existingTeams.filter(t => !t.isWaitlist);
     const waitlist = existingTeams.filter(t => t.isWaitlist);
     const totalSlots = Math.max(1, config.totalSlots || 20);
@@ -4382,19 +5797,17 @@ class DiscordBotManager {
     const gamePrefix = config.game ? `**Game:** ${config.game} | ` : '';
     const statusText =
       config.status === 'open'
-        ? '🟢 OPEN'
-        : config.status === 'paused'
-        ? '⏸️ PAUSED'
-        : '🔒 CLOSED';
-    const headerLine = `${gamePrefix}**Format:** ${config.format} (${config.requiredTags} Tags) | **Status:** ${statusText}\n**Confirmed Teams:** ${confirmed.length}/${totalSlots} | **Teams Per Group:** ${teamsPerGroup} (${groupsCount} Group${groupsCount > 1 ? 's' : ''})\n\n`;
+        ? `${EMOJI.done} OPEN`
+        : `${EMOJI.alert} CLOSED`;
+    const headerLine = `${EMOJI.sword} ${gamePrefix}**Format:** ${config.format} (${config.requiredTags} Tags) | **Status:** ${statusText}\n${EMOJI.golden} **Confirmed Teams:** \`${confirmed.length}/${totalSlots}\` | **Teams Per Group:** \`${teamsPerGroup}\` (\`${groupsCount} Group${groupsCount > 1 ? 's' : ''}\`)\n${EMOJI.dividerBar}\n\n`;
 
     const groupedChunks = this.formatGroupedSlotListChunks(confirmed, config);
     const payloadEmbeds: EmbedBuilder[] = groupedChunks.map((chunk, idx) => {
       const embed = new EmbedBuilder()
         .setTitle(
           idx === 0
-            ? `🏆 ${config.title || 'Glacier Cup'} — Official Slot List`
-            : `🏆 ${config.title || 'Glacier Cup'} — Slot List (Continued #${idx + 1})`
+            ? `${EMOJI.golden} ${config.title || 'Glacier Cup'} — Official Slot List`
+            : `${EMOJI.golden} ${config.title || 'Glacier Cup'} — Slot List (Continued #${idx + 1})`
         )
         .setColor(0x5865F2)
         .setDescription(idx === 0 ? `${headerLine}${chunk}` : chunk);
@@ -4403,8 +5816,8 @@ class DiscordBotManager {
         embed.setTimestamp();
         if (waitlist.length > 0) {
           embed.addFields({
-            name: `⏳ Waiting List (${waitlist.length})`,
-            value: waitlist.map(w => `\`WL #${w.slotNumber}\` **${w.teamName}** (<@${w.captain.id}>)`).join('\n').slice(0, 1020)
+            name: `${EMOJI.alert} Waiting List (${waitlist.length})`,
+            value: waitlist.map(w => `${EMOJI.sword} \`WL #${w.slotNumber}\` **${w.teamName}** (<@${w.captain.id}>)`).join('\n').slice(0, 1020)
           });
         }
       }
@@ -4503,14 +5916,12 @@ class DiscordBotManager {
       : '***';
 
     for (const [, guild] of guildsToNotify) {
-      const idpChannel = guild.channels.cache.find(
-        (c: any) => (c.name === config.idpChannel || c.name === '🔑┃id-pass' || c.name === 'id-pass') && c.isTextBased()
-      ) as TextChannel | undefined;
+      const idpChannel = this.resolveIdpChannel(guild, config);
 
       if (!idpChannel) {
         failedGuilds.push({
           guildName: guild.name,
-          reason: `Channel #${config.idpChannel || 'id-pass'} does not exist (Run /setup first).`
+          reason: `Channel #${config.idpChannel || 'tournament-idp'} does not exist (Run /setup first).`
         });
         continue;
       }
@@ -4530,20 +5941,20 @@ class DiscordBotManager {
       }
 
       const embed = new EmbedBuilder()
-        .setTitle(`🔑 Custom Match Room Details — ${creds.serverType || 'Official Match Lobby'}`)
+        .setTitle(`${EMOJI.giveaway} Custom Match Room Details — ${creds.serverType || 'Official Match Lobby'}`)
         .setColor(0x57F287)
-        .setDescription(`Match credentials for **${config.title || 'Tournament'}** are live!`)
+        .setDescription(`${EMOJI.done} Match credentials for **${config.title || 'Tournament'}** are live!\n${EMOJI.dividerBar}`)
         .addFields(
-          { name: 'Room ID', value: `\`\`\`${creds.roomId}\`\`\``, inline: true },
-          { name: 'Password', value: `\`\`\`${creds.roomPass}\`\`\``, inline: true },
-          { name: 'Map', value: creds.mapName || 'Main Lobby', inline: true },
-          { name: 'Start Time', value: creds.matchTime || 'Starts in 15 Mins', inline: true }
+          { name: `${EMOJI.golden} Room ID`, value: `\`\`\`${creds.roomId}\`\`\``, inline: true },
+          { name: `${EMOJI.sword} Password`, value: `\`\`\`${creds.roomPass}\`\`\``, inline: true },
+          { name: `${EMOJI.giveaway} Map`, value: creds.mapName || 'Main Lobby', inline: true },
+          { name: `${EMOJI.alert} Start Time`, value: creds.matchTime || 'Starts in 15 Mins', inline: true }
         )
-        .setFooter({ text: `Restricted to @${config.verifiedRoleName || 'Verified Team'}` })
+        .setFooter({ text: 'FFA | Glacier Cup Manager™ • Official Match Room Credentials' })
         .setTimestamp();
 
       try {
-        await idpChannel.send({ content: '@here Room ID and Password published!', embeds: [embed] });
+        await idpChannel.send({ content: `${EMOJI.giveaway} @here Room ID and Password published!`, embeds: [embed] });
         this.logEvent(
           'success',
           `Dispatched match room credentials (Room ID: ${maskedRoomId}, Pass: [REDACTED]) to #${idpChannel.name}`,
@@ -4593,7 +6004,7 @@ class DiscordBotManager {
     const rawCommands: any[] = [
       {
         name: 'setup',
-        description: 'Quick-setup tournament category, channels, roles, slots, and teams per group (registration closed)',
+        description: 'Quick-setup tournament category, channels, roles, slots, and start registration immediately',
         options: [
           {
             name: 'slots',
@@ -4639,7 +6050,7 @@ class DiscordBotManager {
         options: [
           {
             name: 'tournament',
-            description: 'Create tournament with channels, roles, slots, and teams per group (registration closed)',
+            description: 'Create tournament with channels, roles, slots, and start registration immediately',
             type: ApplicationCommandOptionType.Subcommand,
             options: [
               {
@@ -4679,22 +6090,6 @@ class DiscordBotManager {
                 required: false
               }
             ]
-          }
-        ]
-      },
-      {
-        name: 'start-registration',
-        description: 'Start or resume tournament registration and unlock #registration channel'
-      },
-      {
-        name: 'pause-registration',
-        description: 'Temporarily pause tournament registration and lock #registration channel',
-        options: [
-          {
-            name: 'reason',
-            description: 'Optional reason for pausing registration',
-            type: ApplicationCommandOptionType.String,
-            required: false
           }
         ]
       },
@@ -4790,10 +6185,6 @@ class DiscordBotManager {
             required: false
           }
         ]
-      },
-      {
-        name: 'unlock',
-        description: 'Unlock and open tournament registrations in #registration'
       },
       {
         name: 'blacklist',
@@ -4941,6 +6332,14 @@ class DiscordBotManager {
         description: 'View live confirmed slots, groups, and waitlist status'
       },
       {
+        name: 'my-team',
+        description: 'View your registered team, edit roster player tags, or withdraw your slot while registration is open'
+      },
+      {
+        name: 'active-tournament',
+        description: 'Check if any tournament is currently active in the server and view its status & channels'
+      },
+      {
         name: 'setup_registration_panel',
         description: 'Post the interactive tournament registration embed and Register Your Team button in #registration'
       },
@@ -5002,6 +6401,111 @@ class DiscordBotManager {
     }
   }
 
+  public buildActiveTournamentEmbed(guild?: Guild | null, currentChannelId?: string | null): EmbedBuilder {
+    this.reconcileActiveTournaments();
+    const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    const managerRoleLabel = rootConfig?.managerRoleName || 'FFA Bot Manager';
+    const guildTourneys = this.getGuildTournaments(guild);
+
+    const activeTourneys: any[] = [];
+    const seenIds = new Set<string>();
+
+    for (const t of guildTourneys) {
+      if (!t) continue;
+      const hasExistingGuildChannel =
+        !guild ||
+        Boolean(
+          (t.categoryId && guild.channels.cache.has(t.categoryId)) ||
+            (t.regChannelId && guild.channels.cache.has(t.regChannelId)) ||
+            (t.slotListChannelId && guild.channels.cache.has(t.slotListChannelId)) ||
+            (t.rulesChannelId && guild.channels.cache.has(t.rulesChannelId)) ||
+            (t.idpChannelId && guild.channels.cache.has(t.idpChannelId))
+        );
+      if (hasExistingGuildChannel && (t.totalSlots > 0 || t.categoryId || t.regChannelId)) {
+        const key = t.id || t.categoryId || t.regChannelId || t.title;
+        if (!seenIds.has(key)) {
+          seenIds.add(key);
+          activeTourneys.push(t);
+        }
+      }
+    }
+
+    if (activeTourneys.length === 0 && rootConfig && rootConfig.totalSlots > 0) {
+      const regCh = guild ? this.resolveRegistrationChannel(guild, rootConfig) : null;
+      const slotCh = guild ? this.resolveSlotListChannel(guild, rootConfig) : null;
+      if (!guild || regCh || slotCh || rootConfig.categoryId) {
+        activeTourneys.push(rootConfig);
+      }
+    }
+
+    if (activeTourneys.length === 0) {
+      return new EmbedBuilder()
+        .setTitle(`${EMOJI.alert} Active Tournament Status — No Active Tournament`)
+        .setColor(0xED4245)
+        .setDescription(
+          `${EMOJI.dividerBar}\n` +
+          `${EMOJI.alert} **No active tournament is currently running** in **${guild?.name || 'this server'}**.\n\n` +
+          `${EMOJI.golden} **How to start a tournament:**\n` +
+          `Staff with **@${managerRoleLabel}** can run **\`/setup\`** (or \`!setup\`) to automatically create a new tournament category, channels, roles, and open registration.\n` +
+          `${EMOJI.dividerBar}`
+        )
+        .setFooter({ text: 'FFA | Glacier Cup Manager™ • Active Tournament Check' })
+        .setTimestamp();
+    }
+
+    const openTourneys = activeTourneys.filter(t => t.status === 'open' && !t.explicitlyStoppedOrPaused);
+    const channelContext = currentChannelId ? this.resolveTournamentContext(guild, currentChannelId) : null;
+
+    const embed = new EmbedBuilder()
+      .setTitle(
+        openTourneys.length > 0
+          ? `${EMOJI.done} Active Tournament Status — ${openTourneys.length} Active`
+          : `${EMOJI.alert} Tournament Status — Registration Closed`
+      )
+      .setColor(openTourneys.length > 0 ? 0x57F287 : 0xFEE75C)
+      .setDescription(
+        `${EMOJI.dividerBar}\n` +
+        (openTourneys.length > 0
+          ? `${EMOJI.giveaway} There ${openTourneys.length === 1 ? 'is **1 active tournament**' : `are **${openTourneys.length} active tournaments**`} running in **${guild?.name || 'this server'}**!`
+          : `${EMOJI.alert} Found **${activeTourneys.length} tournament(s)** in **${guild?.name || 'this server'}**, with registration currently **CLOSED / LOCKED**.`) +
+        `\n${EMOJI.dividerBar}`
+      )
+      .setFooter({ text: 'FFA | Glacier Cup Manager™ • Active Tournament Check' })
+      .setTimestamp();
+
+    for (const t of activeTourneys.slice(0, 10)) {
+      const teams = this.getTeamsForTournament(t);
+      const confirmed = teams.filter((tm: any) => !tm.isWaitlist).length;
+      const waitlist = teams.filter((tm: any) => tm.isWaitlist).length;
+      const isOpen = t.status === 'open' && !t.explicitlyStoppedOrPaused;
+      const isCurrentChannel = Boolean(channelContext?.id && t.id && channelContext.id === t.id && activeTourneys.length > 1);
+
+      const rulesCh = guild ? this.resolveRulesChannel(guild, t) : undefined;
+      const regCh = guild ? this.resolveRegistrationChannel(guild, t) : undefined;
+      const slotCh = guild ? this.resolveSlotListChannel(guild, t) : undefined;
+      const idpCh = guild ? this.resolveIdpChannel(guild, t) : undefined;
+
+      const channelLinks = [
+        rulesCh ? `<#${rulesCh.id}>` : '`#tournament-rules`',
+        regCh ? `<#${regCh.id}>` : '`#tournament-registration`',
+        slotCh ? `<#${slotCh.id}>` : '`#slot-list`',
+        idpCh ? `<#${idpCh.id}>` : '`#tournament-idp`'
+      ].join(' • ');
+
+      embed.addFields({
+        name: `${isOpen ? EMOJI.done : EMOJI.alert} ${t.title || 'Tournament'}${isCurrentChannel ? ' *(Current Channel)*' : ''}`,
+        value:
+          `${EMOJI.golden} **Status:** ${isOpen ? '`ACTIVE (Registration OPEN)`' : '`CLOSED / LOCKED`'}\n` +
+          `${EMOJI.sword} **Slots Filled:** \`${confirmed} / ${t.totalSlots || 20}\` Confirmed${waitlist > 0 ? ` • \`${waitlist}\` Waitlist` : ''}\n` +
+          `${EMOJI.admin} **Format:** \`${t.requiredTags || 4} Player Tags\` • \`${t.teamsPerGroup || t.totalSlots || 20} Teams/Group\` (\`${t.groupsCount || 1} Group(s)\`)\n` +
+          `${EMOJI.giveaway} **Channels:** ${channelLinks}`,
+        inline: false
+      });
+    }
+
+    return embed;
+  }
+
   public async handleInteraction(interaction: ChatInputCommandInteraction) {
     const { commandName } = interaction;
     let subCommand: string | null = null;
@@ -5016,28 +6520,35 @@ class DiscordBotManager {
       (commandName === 'create' && subCommand === 'tournament') ||
       commandName === 'create-tournament';
 
-    const currentConfig = this.getTournamentConfig ? this.getTournamentConfig() : {};
+    const currentConfig = this.resolveTournamentContext(interaction.guild, interaction.channelId) || (this.getTournamentConfig ? this.getTournamentConfig() : {});
     const managerRoleLabel = currentConfig.managerRoleName || 'FFA Bot Manager';
     const isStaff = this.hasBotManagerRole(interaction.member, interaction.guild, isSetupCommand);
 
-    const publicCommands = ['slots'];
+    const publicCommands = ['slots', 'active-tournament', 'my-team'];
 
     if (!publicCommands.includes(commandName) && !isStaff) {
       return interaction.reply({
-        content: `❌ **Access Restricted:** Only members with the **@${managerRoleLabel}** role can use bot slash commands and manage tournaments.\nNormal members can only register their team in \`#${currentConfig.regChannel || '📝┃registration'}\` and check the slot list (\`/slots\` or \`#${currentConfig.slotListChannel || '📊┃slot-list'}\`).`,
+        content: `❌ **Access Restricted:** Only members with the **@${managerRoleLabel}** role can use staff slash commands and manage tournaments.\nPlayers can register their team in \`#${currentConfig.regChannel || 'tournament-registration'}\`, manage their own roster/slot with \`/my-team\`, and check slots via \`/slots\`, \`/active-tournament\`, or \`#${currentConfig.slotListChannel || 'slot-list'}\`.`,
         ephemeral: true
-      });
+      }).catch(() => {});
     }
 
     const activeTitle = currentConfig.title || (interaction.guild ? `${interaction.guild.name} Championship` : 'Glacier Cup');
 
     if (commandName === 'rules' && isStaff && !interaction.options.getString('rules')) {
-      await interaction.showModal(this.createRulesModal(currentConfig.customRules));
+      await interaction.showModal(this.createRulesModal(currentConfig.customRules, currentConfig.id)).catch(() => {});
       return;
     }
 
-    const useEphemeral = commandName === 'idpass';
-    await interaction.deferReply({ ephemeral: useEphemeral });
+    const useEphemeral = commandName === 'idpass' || commandName === 'my-team';
+    try {
+      if (!interaction.deferred && !interaction.replied) {
+        await interaction.deferReply({ ephemeral: useEphemeral });
+      }
+    } catch (deferErr: any) {
+      console.log('[DiscordBot] Could not deferReply for /' + commandName + ':', deferErr?.message || deferErr);
+      return;
+    }
 
     this.logEvent('info', `Executing /${commandName}${subCommand ? ' ' + subCommand : ''} by @${interaction.user.username}`, interaction.guild?.name);
 
@@ -5046,15 +6557,19 @@ class DiscordBotManager {
         return interaction.editReply('❌ This command can only be used inside a Discord server.');
       }
 
-      const rawSlots = interaction.options.getInteger('slots') || currentConfig.totalSlots || 20;
+      const rawSlots = interaction.options.getInteger('slots') || 20;
       const slots = Math.max(2, Math.min(500, rawSlots));
-      const tags = Math.max(1, Math.min(10, interaction.options.getInteger('tags') || currentConfig.requiredTags || 4));
+      const tags = Math.max(1, Math.min(10, interaction.options.getInteger('tags') || 4));
       const rawGroupsOption = interaction.options.getInteger('groups');
       const teamsPerGroup = rawGroupsOption && rawGroupsOption > 0
         ? Math.min(slots, Math.max(1, rawGroupsOption))
-        : (currentConfig.teamsPerGroup && currentConfig.teamsPerGroup > 0 ? Math.min(slots, currentConfig.teamsPerGroup) : slots);
+        : slots;
       const groupsCount = Math.max(1, Math.ceil(slots / teamsPerGroup));
-      const title = interaction.options.getString('title') || currentConfig.title || `${interaction.guild.name} Championship`;
+      const existingGuildTourneys = this.getGuildTournaments(interaction.guild);
+      const defaultTourneyTitle = existingGuildTourneys.length > 0
+        ? `${interaction.guild.name} Championship #${existingGuildTourneys.length + 1}`
+        : `${interaction.guild.name} Championship`;
+      const title = interaction.options.getString('title')?.trim() || defaultTourneyTitle;
       const customRules = interaction.options.getString('rules') || undefined;
 
       const result = await this.createTournament(interaction.guild, {
@@ -5072,35 +6587,37 @@ class DiscordBotManager {
           this.pendingRulesPrompts.set(`${interaction.guild.id}:${interaction.user.id}`, {
             guildId: interaction.guild.id,
             channelId: interaction.channelId,
+            tournamentId: result.tournamentId,
             expiresAt: Date.now() + 10 * 60 * 1000
           });
         }
 
         const formatName = tags === 4 ? 'Squad' : tags === 3 ? 'Trio' : tags === 2 ? 'Duo' : tags === 1 ? 'Solo' : 'Custom';
         const embed = new EmbedBuilder()
-          .setTitle('🏆 Tournament Setup Complete — Registration Panel Ready')
+          .setTitle(`${EMOJI.golden} Tournament Setup Complete — Registration Panel Ready`)
           .setColor(result.warnings && result.warnings.length > 0 ? 0xFEE75C : 0x57F287)
           .setDescription(
-            `**${title}** has been provisioned by <@${interaction.user.id}>!\n` +
-            `✅ The interactive **Registration Panel** (\`🏆 Register Your Team\` button) has been posted in \`#📝┃registration\`!`
+            `${EMOJI.done} **${title}** has been provisioned by <@${interaction.user.id}>!\n` +
+            `${EMOJI.giveaway} The interactive **Registration Panel** (\`🏆 Register Your Team\` button) has been posted in \`#tournament-registration\`!\n` +
+            `${EMOJI.dividerBar}`
           )
           .addFields(
-            { name: 'Total Slots & Tags', value: `\`${slots} Slots\` • \`${tags} Required Players (${formatName})\``, inline: true },
-            { name: 'Teams Per Group', value: `\`${teamsPerGroup} Teams/Group\` (\`${groupsCount} Group(s)\`)`, inline: true },
-            { name: 'Registration Status', value: '🟢 `OPEN (Registration Panel Active)`', inline: true },
+            { name: `${EMOJI.sword} Total Slots & Tags`, value: `\`${slots} Slots\` • \`${tags} Required Players (${formatName})\``, inline: true },
+            { name: `${EMOJI.golden} Teams Per Group`, value: `\`${teamsPerGroup} Teams/Group\` (\`${groupsCount} Group(s)\`)`, inline: true },
+            { name: `${EMOJI.done} Registration Status`, value: `${EMOJI.done} \`OPEN (Registration Panel Active)\``, inline: true },
             {
-              name: 'Created Roles & Access Control',
-              value: `🛡️ \`@${managerRoleLabel}\` *(Required to use all bot slash commands)*\n✅ \`@Verified Team\` *(Unlocks #id-pass for registered players)*`,
+              name: `${EMOJI.admin} Created Roles & Access Control`,
+              value: `${EMOJI.admin} \`@${managerRoleLabel}\` *(Required to use all bot slash commands)*\n${EMOJI.done} \`@Verified Team\` *(Assigned to registered players)*`,
               inline: false
             },
-            { name: 'Auto-Created Category & Channels', value: result.created.join('\n') || 'All channels active', inline: false },
+            { name: `${EMOJI.golden} Auto-Created Category & Channels`, value: result.created.join('\n') || 'All channels active', inline: false },
             {
-              name: '▶️ Registration Control Commands',
+              name: `${EMOJI.sword} Registration Control`,
               value:
-                '• Players can now click **`🏆 Register Your Team`** in `#📝┃registration`.\n' +
-                '• Run **`/pause-registration`** to temporarily pause registration.\n' +
-                '• Run **`/stop-registration`** to end registration and lock `#📝┃registration`.\n' +
-                '• Run **`/setup_registration_panel`** anytime to re-post the registration button panel.',
+                `${EMOJI.done} Registration has started automatically and will continue until you stop it.\n` +
+                `${EMOJI.giveaway} Players can click **\`🏆 Register Your Team\`** in \`#tournament-registration\`.\n` +
+                `${EMOJI.alert} Run **\`/stop-registration\`** when you want to stop registration and lock \`#tournament-registration\`.\n` +
+                `${EMOJI.sword} Run **\`/setup_registration_panel\`** anytime to re-post the registration button panel.`,
               inline: false
             }
           )
@@ -5109,23 +6626,23 @@ class DiscordBotManager {
 
         if (result.warnings && result.warnings.length > 0) {
           embed.addFields({
-            name: '⚠️ Partial Setup Warnings',
+            name: `${EMOJI.alert} Partial Setup Warnings`,
             value: result.warnings.join('\n'),
             inline: false
           });
         }
 
         embed.addFields({
-          name: customRules ? '📜 Tournament Rules' : '📜 Next Step — Provide Tournament Rules',
+          name: customRules ? `${EMOJI.done} Tournament Rules` : `${EMOJI.golden} Next Step — Provide Tournament Rules`,
           value: customRules
-            ? '✅ Published your custom rules to `#📋┃rules-format`!'
-            : 'Please **reply in this channel with your Tournament Rules & Format** (or click the button below / use `/rules`) and I will publish them to `#📋┃rules-format`!',
+            ? `${EMOJI.done} Published your custom rules to \`#tournament-rules\`!`
+            : `Please **reply in this channel with your Tournament Rules & Format** (or click the button below / use \`/rules\`) and I will publish them to \`#tournament-rules\`!`,
           inline: false
         });
 
         return interaction.editReply({
           embeds: [embed],
-          components: customRules ? [] : [this.createRulesButtonRow()]
+          components: customRules ? [] : [this.createRulesButtonRow(result.tournamentId)]
         });
       } else {
         const rollbackInfo = result.rolledBack && result.rolledBack.length > 0
@@ -5140,19 +6657,19 @@ class DiscordBotManager {
       commandName === 'delete-slot'
     ) {
       const slotNumber = interaction.options.getInteger('slot', true);
-      const result = await this.deleteSlot(slotNumber, interaction.guild || undefined);
+      const result = await this.deleteSlot(slotNumber, interaction.guild || undefined, { tournamentId: currentConfig.id }, currentConfig);
 
       if (result.success && result.deletedTeam) {
         const embed = new EmbedBuilder()
-          .setTitle('🗑️ Slot Deleted Successfully')
+          .setTitle(`${EMOJI.alert} Slot Deleted Successfully`)
           .setColor(result.syncWarnings && result.syncWarnings.length > 0 ? 0xFEE75C : 0xED4245)
-          .setDescription(`**Slot #${slotNumber}** has been removed from the tournament.`)
+          .setDescription(`**Slot #${slotNumber}** has been removed from the tournament.\n${EMOJI.dividerBar}`)
           .addFields(
-            { name: 'Removed Team', value: `**${result.deletedTeam.teamName}** (Captain: <@${result.deletedTeam.captain.id}>)`, inline: false },
+            { name: `${EMOJI.sword} Removed Team`, value: `**${result.deletedTeam.teamName}** (Captain: <@${result.deletedTeam.captain.id}>)`, inline: false },
             {
-              name: 'Waitlist Promotion',
+              name: `${EMOJI.golden} Waitlist Promotion`,
               value: result.promotedTeam
-                ? `✅ **${result.promotedTeam.teamName}** was auto-promoted from the waitlist to confirmed **Slot #${result.promotedTeam.slotNumber}** (${result.promotedTeam.group || 'Group A'})!`
+                ? `${EMOJI.done} **${result.promotedTeam.teamName}** was auto-promoted from the waitlist to confirmed **Slot #${result.promotedTeam.slotNumber}** (${result.promotedTeam.group || 'Group A'})!`
                 : 'ℹ️ No teams on the waitlist to promote.',
               inline: false
             }
@@ -5162,7 +6679,7 @@ class DiscordBotManager {
 
         if (result.syncWarnings && result.syncWarnings.length > 0) {
           embed.addFields({
-            name: '⚠️ Role / Channel Sync Notice',
+            name: `${EMOJI.alert} Role / Channel Sync Notice`,
             value: result.syncWarnings.join('\n'),
             inline: false
           });
@@ -5182,62 +6699,62 @@ class DiscordBotManager {
       const confirmed = interaction.options.getBoolean('confirm') ?? false;
 
       if (!confirmed) {
-        const preview = await this.previewDeleteTournament(interaction.guild || undefined, deleteChannels);
+        const preview = await this.previewDeleteTournament(interaction.guild || undefined, deleteChannels, currentConfig);
         const previewEmbed = new EmbedBuilder()
-          .setTitle('⚠️ Confirm Destructive Action — Delete Tournament')
+          .setTitle(`${EMOJI.alert} Confirm Destructive Action — Delete Tournament`)
           .setColor(0xFEE75C)
-          .setDescription(`You are about to delete **${preview.title}** and reset all registered rosters. Please review what will be removed and confirm below:`)
+          .setDescription(`You are about to delete **${preview.title}** and reset all registered rosters. Please review what will be removed and confirm below:\n${EMOJI.dividerBar}`)
           .addFields(
-            { name: '👥 Rosters to Clear', value: `\`${preview.confirmedCount} Confirmed\` • \`${preview.waitlistCount} Waitlist\``, inline: true },
-            { name: '📁 Categories to Delete', value: preview.categoriesToDelete.length > 0 ? preview.categoriesToDelete.join('\n') : '*(None)*', inline: true },
-            { name: '🔊 Voice Channels to Delete', value: preview.voiceChannelsToDelete.length > 0 ? preview.voiceChannelsToDelete.slice(0, 8).join('\n') + (preview.voiceChannelsToDelete.length > 8 ? `\n...and ${preview.voiceChannelsToDelete.length - 8} more` : '') : '*(None)*', inline: false },
-            { name: '🏷️ Team Roles to Delete', value: preview.rolesToDelete.length > 0 ? preview.rolesToDelete.slice(0, 8).join('\n') + (preview.rolesToDelete.length > 8 ? `\n...and ${preview.rolesToDelete.length - 8} more` : '') : '*(None)*', inline: true },
-            { name: '💬 Text Channels to Delete', value: preview.textChannelsToDelete.length > 0 ? preview.textChannelsToDelete.join('\n') : '*(None)*', inline: true }
+            { name: `${EMOJI.sword} Rosters to Clear`, value: `\`${preview.confirmedCount} Confirmed\` • \`${preview.waitlistCount} Waitlist\``, inline: true },
+            { name: `${EMOJI.golden} Categories to Delete`, value: preview.categoriesToDelete.length > 0 ? preview.categoriesToDelete.join('\n') : '*(None)*', inline: true },
+            { name: `${EMOJI.giveaway} Voice Channels to Delete`, value: preview.voiceChannelsToDelete.length > 0 ? preview.voiceChannelsToDelete.slice(0, 8).join('\n') + (preview.voiceChannelsToDelete.length > 8 ? `\n...and ${preview.voiceChannelsToDelete.length - 8} more` : '') : '*(None)*', inline: false },
+            { name: `${EMOJI.admin} Team Roles to Delete`, value: preview.rolesToDelete.length > 0 ? preview.rolesToDelete.slice(0, 8).join('\n') + (preview.rolesToDelete.length > 8 ? `\n...and ${preview.rolesToDelete.length - 8} more` : '') : '*(None)*', inline: true },
+            { name: `${EMOJI.golden} Text Channels to Delete`, value: preview.textChannelsToDelete.length > 0 ? preview.textChannelsToDelete.join('\n') : '*(None)*', inline: true }
           )
           .setFooter({ text: 'Click Confirm below to permanently execute this action' })
           .setTimestamp();
 
         return interaction.editReply({
           embeds: [previewEmbed],
-          components: [this.createDeleteConfirmRow(deleteChannels)]
+          components: [this.createDeleteConfirmRow(deleteChannels, currentConfig.id)]
         });
       }
 
-      const result = await this.deleteTournament(interaction.guild || undefined, deleteChannels);
+      const result = await this.deleteTournament(interaction.guild || undefined, deleteChannels, currentConfig);
 
       if (result.success) {
         const embed = new EmbedBuilder()
-          .setTitle('🗑️ Tournament Deleted & All Tournament Assets Removed')
+          .setTitle(`${EMOJI.done} Tournament Deleted & All Tournament Assets Removed`)
           .setColor(0xED4245)
-          .setDescription(`The active tournament has been deleted by <@${interaction.user.id}>. All categories, voice channels, text channels, and team roles have been removed from **${interaction.guild?.name || 'the server'}**.`)
+          .setDescription(`The active tournament has been deleted by <@${interaction.user.id}>. All categories, voice channels, text channels, and team roles have been removed from **${interaction.guild?.name || 'the server'}**.\n${EMOJI.dividerBar}`)
           .addFields(
             {
-              name: '📁 Deleted Categories',
+              name: `${EMOJI.golden} Deleted Categories`,
               value: result.deletedCategories.length > 0 ? result.deletedCategories.slice(0, 10).join('\n') + (result.deletedCategories.length > 10 ? `\n...and ${result.deletedCategories.length - 10} more` : '') : '*(None)*',
               inline: true
             },
             {
-              name: '🔊 Deleted Voice Channels',
+              name: `${EMOJI.giveaway} Deleted Voice Channels`,
               value: result.deletedVoiceChannels.length > 0 ? result.deletedVoiceChannels.slice(0, 10).join('\n') + (result.deletedVoiceChannels.length > 10 ? `\n...and ${result.deletedVoiceChannels.length - 10} more` : '') : '*(None)*',
               inline: true
             },
             {
-              name: '🏷️ Deleted Roles',
+              name: `${EMOJI.admin} Deleted Roles`,
               value: result.deletedRoles.length > 0 ? result.deletedRoles.slice(0, 10).join('\n') + (result.deletedRoles.length > 10 ? `\n...and ${result.deletedRoles.length - 10} more` : '') : '*(None)*',
               inline: true
             },
             {
-              name: '💬 Deleted Text Channels',
+              name: `${EMOJI.sword} Deleted Text Channels`,
               value: result.deletedTextChannels.length > 0 ? result.deletedTextChannels.join('\n') : '*(None)*',
               inline: false
             },
             {
-              name: '👥 Cleared Rosters & Slots',
+              name: `${EMOJI.done} Cleared Rosters & Slots`,
               value: `\`${result.clearedTeamsCount} Team(s) cleared\` • Tournament status set to CLOSED`,
               inline: true
             },
             {
-              name: '🏆 Next Steps',
+              name: `${EMOJI.golden} Next Steps`,
               value: 'Run `/setup` or `/create tournament` to launch a new tournament whenever you are ready.',
               inline: true
             }
@@ -5245,9 +6762,9 @@ class DiscordBotManager {
           .setFooter({ text: 'FFA | Glacier Cup Manager™' })
           .setTimestamp();
 
-        return interaction.editReply({ embeds: [embed] });
+        return interaction.editReply({ embeds: [embed] }).catch(() => {});
       } else {
-        return interaction.editReply(`❌ **Failed to delete tournament:** ${result.error || 'Unknown error'}`);
+        return interaction.editReply(`❌ **Failed to delete tournament:** ${result.error || 'Unknown error'}`).catch(() => {});
       }
     }
 
@@ -5269,25 +6786,25 @@ class DiscordBotManager {
 
       if (!res.success) {
         return interaction.editReply(
-          `❌ **Failed to publish Room ID & Password:** ${res.error || 'Could not dispatch to #id-pass.'}`
+          `❌ **Failed to publish Room ID & Password:** ${res.error || 'Could not dispatch to #tournament-idp.'}`
         );
       }
 
       const embed = new EmbedBuilder()
-        .setTitle('🔑 Custom Match Credentials Dispatched (Private Staff Confirmation)')
+        .setTitle(`${EMOJI.done} Custom Match Credentials Dispatched (Private Staff Confirmation)`)
         .setColor(res.failedGuilds.length > 0 ? 0xFEE75C : 0x57F287)
-        .setDescription(`Room ID & Password have been published to **#${currentConfig.idpChannel || 'id-pass'}** (${res.sentCount} server channel(s) notified).`)
+        .setDescription(`${EMOJI.giveaway} Room ID & Password have been published to **#${currentConfig.idpChannel || 'tournament-idp'}** (${res.sentCount} server channel(s) notified).\n${EMOJI.dividerBar}`)
         .addFields(
-          { name: 'Room ID', value: `\`\`\`${roomId}\`\`\``, inline: true },
-          { name: 'Password', value: `\`\`\`${roomPass}\`\`\``, inline: true },
-          { name: 'Map & Time', value: `${mapName} • ${matchTime}`, inline: false }
+          { name: `${EMOJI.golden} Room ID`, value: `\`\`\`${roomId}\`\`\``, inline: true },
+          { name: `${EMOJI.sword} Password`, value: `\`\`\`${roomPass}\`\`\``, inline: true },
+          { name: `${EMOJI.giveaway} Map & Time`, value: `${mapName} • ${matchTime}`, inline: false }
         )
         .setFooter({ text: `Dispatched privately by @${interaction.user.username} • Credentials masked in system logs` })
         .setTimestamp();
 
       if (res.failedGuilds.length > 0) {
         embed.addFields({
-          name: '⚠️ Partial Publication Failures',
+          name: `${EMOJI.alert} Partial Publication Failures`,
           value: res.failedGuilds.map(f => `• **${f.guildName}**: ${f.reason}`).join('\n'),
           inline: false
         });
@@ -5296,85 +6813,30 @@ class DiscordBotManager {
       return interaction.editReply({ embeds: [embed] });
     }
 
-    if (commandName === 'pause-registration' || commandName === 'pause') {
-      const reason = interaction.options.getString('reason') || 'Registration temporarily paused by tournament staff.';
-      const res = await this.pauseRegistration(interaction.guild || undefined, reason, interaction.user.username);
-      if (!res.success) {
-        return interaction.editReply(`❌ **Failed to pause registration:** ${res.error}`);
-      }
-      const embed = new EmbedBuilder()
-        .setTitle('⏸️ Tournament Registration Paused')
-        .setColor(0xFEE75C)
-        .setDescription(
-          `Registrations for **${activeTitle}** are now **PAUSED** and \`#${currentConfig.regChannel || '📝┃registration'}\` has been temporarily locked.\n` +
-          `**Reason:** ${reason}`
-        )
-        .addFields({
-          name: 'Channel Permission Status',
-          value: res.pausedChannels.length > 0
-            ? `⏸️ Paused ${res.pausedChannels.join(', ')} (\`@everyone\` temporarily cannot send messages)`
-            : '⏸️ Registration status set to PAUSED',
-          inline: false
-        })
-        .setFooter({ text: `Paused by @${interaction.user.username} • Run /start-registration to resume` })
-        .setTimestamp();
-      if (res.warnings.length > 0) {
-        embed.addFields({ name: '⚠️ Notices', value: res.warnings.join('\n'), inline: false });
-      }
-      return interaction.editReply({ embeds: [embed] });
-    }
-
     if (commandName === 'stop-registration' || commandName === 'lock') {
       const reason = interaction.options.getString('reason') || 'Registration ended and channel locked by tournament staff.';
-      const res = await this.stopRegistration(interaction.guild || undefined, reason, interaction.user.username);
+      const res = await this.stopRegistration(interaction.guild || undefined, reason, interaction.user.username, currentConfig);
       if (!res.success) {
         return interaction.editReply(`❌ **Failed to stop registration:** ${res.error}`);
       }
       const embed = new EmbedBuilder()
-        .setTitle('🔴 Tournament Registration Ended & Channel Locked')
+        .setTitle(`${EMOJI.alert} Tournament Registration Ended & Channel Locked`)
         .setColor(0xED4245)
         .setDescription(
-          `Registrations for **${activeTitle}** are now **CLOSED** and \`#${currentConfig.regChannel || '📝┃registration'}\` has been **LOCKED**.\n` +
-          `**Reason:** ${reason}`
+          `Registrations for **${activeTitle}** are now **CLOSED** and \`#${currentConfig.regChannel || 'tournament-registration'}\` has been **LOCKED**.\n` +
+          `**Reason:** ${reason}\n${EMOJI.dividerBar}`
         )
         .addFields({
-          name: 'Channel Permission Status',
+          name: `${EMOJI.admin} Channel Permission Status`,
           value: res.lockedChannels.length > 0
             ? `🔒 Locked ${res.lockedChannels.join(', ')} (\`@everyone\` cannot send messages)`
             : '🔒 Registration status set to CLOSED',
           inline: false
         })
-        .setFooter({ text: `Stopped by @${interaction.user.username} • Run /start-registration to reopen` })
+        .setFooter({ text: `Stopped by @${interaction.user.username} • FFA | Glacier Cup Manager™` })
         .setTimestamp();
       if (res.warnings.length > 0) {
-        embed.addFields({ name: '⚠️ Notices', value: res.warnings.join('\n'), inline: false });
-      }
-      return interaction.editReply({ embeds: [embed] });
-    }
-
-    if (commandName === 'start-registration' || commandName === 'unlock') {
-      const res = await this.startRegistration(interaction.guild || undefined, interaction.user.username);
-      if (!res.success) {
-        return interaction.editReply(`❌ **Failed to start registration:** ${res.error}`);
-      }
-      const embed = new EmbedBuilder()
-        .setTitle('🟢 Tournament Registration Started & Channel Unlocked!')
-        .setColor(0x57F287)
-        .setDescription(
-          `Registrations for **${activeTitle}** are now **OPEN** and \`#${currentConfig.regChannel || '📝┃registration'}\` has been **UNLOCKED**!\n` +
-          `Players can now tag **${currentConfig.requiredTags || 4} players** with their Team Name in \`#${currentConfig.regChannel || '📝┃registration'}\` to claim a slot.`
-        )
-        .addFields({
-          name: 'Channel Permission Status',
-          value: res.unlockedChannels.length > 0
-            ? `🔓 Unlocked ${res.unlockedChannels.join(', ')} (\`@everyone\` can now send messages)`
-            : '🔓 Registration status set to OPEN',
-          inline: false
-        })
-        .setFooter({ text: `Started by @${interaction.user.username} • Run /pause-registration to pause or /stop-registration to end` })
-        .setTimestamp();
-      if (res.warnings.length > 0) {
-        embed.addFields({ name: '⚠️ Notices', value: res.warnings.join('\n'), inline: false });
+        embed.addFields({ name: `${EMOJI.alert} Notices`, value: res.warnings.join('\n'), inline: false });
       }
       return interaction.editReply({ embeds: [embed] });
     }
@@ -5385,12 +6847,12 @@ class DiscordBotManager {
         const reason = interaction.options.getString('reason') || 'Fairplay / Rule violation';
         const entry = this.addToBlacklist(user.id, user.username, reason, interaction.user.username);
         const embed = new EmbedBuilder()
-          .setTitle('🚫 Player Blacklisted')
+          .setTitle(`${EMOJI.alert} Player Blacklisted`)
           .setColor(0xED4245)
-          .setDescription(`Player <@${entry.userId}> (\`${entry.username}\`) has been banned from registering or being tagged in any team.`)
+          .setDescription(`Player <@${entry.userId}> (\`${entry.username}\`) has been banned from registering or being tagged in any team.\n${EMOJI.dividerBar}`)
           .addFields(
-            { name: 'Reason', value: entry.reason, inline: true },
-            { name: 'Actioned By', value: `<@${interaction.user.id}>`, inline: true }
+            { name: `${EMOJI.sword} Reason`, value: entry.reason, inline: true },
+            { name: `${EMOJI.admin} Actioned By`, value: `<@${interaction.user.id}>`, inline: true }
           )
           .setTimestamp();
         return interaction.editReply({ embeds: [embed] });
@@ -5399,18 +6861,18 @@ class DiscordBotManager {
         const removed = this.removeFromBlacklist(user.id);
         return interaction.editReply(
           removed
-            ? `✅ Removed <@${user.id}> (\`${user.username}\`) from the tournament blacklist.`
-            : `❌ <@${user.id}> was not found on the blacklist.`
+            ? `${EMOJI.done} Removed <@${user.id}> (\`${user.username}\`) from the tournament blacklist.`
+            : `${EMOJI.alert} <@${user.id}> was not found on the blacklist.`
         );
       } else {
         const list = this.getBlacklist();
         const embed = new EmbedBuilder()
-          .setTitle(`🚫 Tournament Blacklist (${list.length})`)
+          .setTitle(`${EMOJI.admin} Tournament Blacklist (${list.length})`)
           .setColor(0xED4245)
           .setDescription(
             list.length > 0
-              ? list.map((b, i) => `\`${i + 1}.\` <@${b.userId}> (\`${b.username}\`) — *${b.reason}*`).join('\n')
-              : '✅ No players are currently blacklisted.'
+              ? `${EMOJI.dividerBar}\n` + list.map((b, i) => `\`${i + 1}.\` <@${b.userId}> (\`${b.username}\`) — *${b.reason}*`).join('\n')
+              : `${EMOJI.done} No players are currently blacklisted.`
           )
           .setTimestamp();
         return interaction.editReply({ embeds: [embed] });
@@ -5419,7 +6881,7 @@ class DiscordBotManager {
 
     if (commandName === 'tagcheck') {
       const user = interaction.options.getUser('user', true);
-      const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+      const teams = this.getTeamsForTournament(currentConfig);
       const banned = this.blacklist.find(b => this.normalizeMemberId(b.userId) === user.id);
       const foundTeam = teams.find(
         t =>
@@ -5429,25 +6891,25 @@ class DiscordBotManager {
       );
 
       const embed = new EmbedBuilder()
-        .setTitle('🔍 FFA | Glacier Cup Manager™ Player Tagcheck Dossier')
+        .setTitle(`${EMOJI.admin} FFA | Glacier Cup Manager™ Player Tagcheck Dossier`)
         .setColor(banned ? 0xED4245 : foundTeam ? 0xFEE75C : 0x57F287)
-        .setDescription(`Verification lookup for <@${user.id}> (\`@${user.username}\`):`)
+        .setDescription(`Verification lookup for <@${user.id}> (\`@${user.username}\`):\n${EMOJI.dividerBar}`)
         .addFields({
-          name: 'Eligibility Status',
+          name: `${EMOJI.sword} Eligibility Status`,
           value: banned
-            ? `🚫 **BLACKLISTED** — Reason: *${banned.reason}*`
+            ? `${EMOJI.alert} **BLACKLISTED** — Reason: *${banned.reason}*`
             : foundTeam
-            ? `⚠️ **ALREADY REGISTERED** (Registered on a roster)`
-            : `✅ **ELIGIBLE / FREE AGENT** (Cleared to register)`,
+            ? `${EMOJI.alert} **ALREADY REGISTERED** (Registered on a roster)`
+            : `${EMOJI.done} **ELIGIBLE / FREE AGENT** (Cleared to register)`,
           inline: false
         })
         .setTimestamp();
 
       if (foundTeam) {
         embed.addFields(
-          { name: 'Team Name', value: `**${foundTeam.teamName}**`, inline: true },
-          { name: 'Allocated Slot', value: foundTeam.isWaitlist ? `Waitlist #${foundTeam.slotNumber}` : `Slot #${foundTeam.slotNumber} (${foundTeam.group || 'Group A'})`, inline: true },
-          { name: 'Captain', value: `<@${foundTeam.captain.id}>`, inline: true }
+          { name: `${EMOJI.sword} Team Name`, value: `**${foundTeam.teamName}**`, inline: true },
+          { name: `${EMOJI.golden} Allocated Slot`, value: foundTeam.isWaitlist ? `Waitlist #${foundTeam.slotNumber}` : `Slot #${foundTeam.slotNumber} (${foundTeam.group || 'Group A'})`, inline: true },
+          { name: `${EMOJI.admin} Captain`, value: `<@${foundTeam.captain.id}>`, inline: true }
         );
       }
       return interaction.editReply({ embeds: [embed] });
@@ -5455,7 +6917,7 @@ class DiscordBotManager {
 
     if (commandName === 'team-info') {
       const query = interaction.options.getString('query', true).trim();
-      const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+      const teams = this.getTeamsForTournament(currentConfig);
       const slotNum = parseInt(query.replace(/\D/g, ''), 10);
       const found = (!isNaN(slotNum) && String(slotNum) === query.replace('#', ''))
         ? teams.find(t => t.slotNumber === slotNum)
@@ -5466,37 +6928,47 @@ class DiscordBotManager {
       }
 
       const embed = new EmbedBuilder()
-        .setTitle(`🛡️ Team Dossier — ${found.teamName}`)
+        .setTitle(`${EMOJI.golden} Team Dossier — ${found.teamName}`)
         .setColor(found.isWaitlist ? 0xFEE75C : 0x5865F2)
+        .setDescription(`${EMOJI.dividerBar}`)
         .addFields(
-          { name: 'Slot Allocation', value: found.isWaitlist ? `\`Waitlist #${found.slotNumber}\`` : `\`Slot #${found.slotNumber}\``, inline: true },
-          { name: 'Assigned Group', value: `\`${found.group || 'Group A'}\``, inline: true },
-          { name: 'Team Captain', value: `<@${found.captain.id}>`, inline: true },
+          { name: `${EMOJI.golden} Slot Allocation`, value: found.isWaitlist ? `\`Waitlist #${found.slotNumber}\`` : `\`Slot #${found.slotNumber}\``, inline: true },
+          { name: `${EMOJI.sword} Assigned Group`, value: `\`${found.group || 'Group A'}\``, inline: true },
+          { name: `${EMOJI.admin} Team Captain`, value: `<@${found.captain.id}>`, inline: true },
           {
-            name: `Verified Roster (${found.players.length} Players)`,
-            value: found.players.map((p: any, idx: number) => `\`${idx + 1}.\` <@${p.id}> (\`${p.displayName || p.username}\`)`).join('\n') || 'None',
+            name: `${EMOJI.done} Verified Roster (${found.players.length} Players)`,
+            value: found.players.map((p: any, idx: number) => `${EMOJI.sword} \`${idx + 1}.\` <@${p.id}> (\`${p.displayName || p.username}\`)`).join('\n') || 'None',
             inline: false
           },
-          { name: 'Registered At', value: new Date(found.registeredAt).toLocaleString(), inline: true },
-          { name: 'Team Role & Tourney Role', value: `${found.teamRoleId ? `<@&${found.teamRoleId}>` : `\`@${found.teamRoleName || found.teamName}\``} • \`@${currentConfig.verifiedRoleName || 'Verified Team'}\``, inline: true },
+          { name: `${EMOJI.giveaway} Registered At`, value: new Date(found.registeredAt).toLocaleString(), inline: true },
+          { name: `${EMOJI.admin} Team Role & Tourney Role`, value: `${found.teamRoleId ? `<@&${found.teamRoleId}>` : `\`@${found.teamRoleName || found.teamName}\``} • \`@${currentConfig.verifiedRoleName || 'Verified Team'}\``, inline: true },
           {
-            name: 'Team Category & Private VC',
+            name: `${EMOJI.golden} Team Category & Private VC`,
             value: `📁 \`${found.teamCategoryName || found.teamName}\` • 🔊 ${found.teamVoiceChannelId ? `<#${found.teamVoiceChannelId}>` : `\`${found.teamVoiceChannelName || found.teamName}\``}`,
             inline: false
           }
         )
         .setFooter({ text: `Team ID: ${found.id}` })
         .setTimestamp();
+      const voiceUrl =
+        interaction.guild && found.teamVoiceChannelId
+          ? await this.resolveVoiceConnectUrl(interaction.guild, found.teamVoiceChannelId, found.teamVoiceInviteUrl)
+          : undefined;
       const components =
         interaction.guild && found.teamVoiceChannelId
-          ? [this.createVoiceConnectButtonRow(interaction.guild.id, found.teamVoiceChannelId, found.teamVoiceChannelName || found.teamName)]
+          ? [this.createVoiceConnectButtonRow(interaction.guild.id, found.teamVoiceChannelId, found.teamVoiceChannelName || found.teamName, voiceUrl)]
           : [];
       return interaction.editReply({ embeds: [embed], components });
     }
 
+    if (commandName === 'my-team') {
+      const payload = await this.buildMyTeamPayload(interaction.guild, interaction.user.id, currentConfig);
+      return interaction.editReply({ embeds: payload.embeds, components: payload.components });
+    }
+
     if (commandName === 'standings') {
       const groupArg = interaction.options.getString('group');
-      const teams = (this.getRegisteredTeams ? this.getRegisteredTeams() : []).filter(t => !t.isWaitlist);
+      const teams = this.getTeamsForTournament(currentConfig).filter(t => !t.isWaitlist);
       const groupFilter = groupArg ? `Group ${groupArg.toUpperCase().replace('GROUP', '').trim()}` : null;
       const filtered = groupFilter ? teams.filter(t => (t.group || 'Group A').toLowerCase() === groupFilter.toLowerCase()) : teams;
 
@@ -5505,16 +6977,16 @@ class DiscordBotManager {
         const placePts = Math.max(4, 28 - idx * 4);
         const killPts = Math.max(2, 22 - idx * 3);
         const total = placePts + killPts;
-        const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `\`#${idx + 1}\``;
+        const medal = idx === 0 ? EMOJI.golden : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${EMOJI.sword} \`#${idx + 1}\``;
         return `${medal} **${t.teamName}** (Slot #${t.slotNumber}) — **${total} Pts** *(Wins: ${wins} | Finishes: ${killPts})*`;
       });
 
       const embed = new EmbedBuilder()
-        .setTitle(`🏆 ${activeTitle} — Official Standings ${groupFilter ? `(${groupFilter})` : ''}`)
+        .setTitle(`${EMOJI.golden} ${activeTitle} — Official Standings ${groupFilter ? `(${groupFilter})` : ''}`)
         .setColor(0xFEE75C)
-        .setDescription(rows.length > 0 ? rows.join('\n') : '*No confirmed teams to rank yet.*')
+        .setDescription((rows.length > 0 ? rows.join('\n') : '*No confirmed teams to rank yet.*') + `\n${EMOJI.dividerBar}`)
         .addFields({
-          name: '📊 Official Scoring Matrix',
+          name: `${EMOJI.giveaway} Official Scoring Matrix`,
           value: '`1st: 10 pts` • `2nd: 6 pts` • `3rd: 5 pts` • `4th: 4 pts` • `5th: 3 pts` • `6th: 2 pts` • `7th-8th: 1 pt` • `Finish: +1 pt`',
           inline: false
         })
@@ -5526,12 +6998,12 @@ class DiscordBotManager {
     if (commandName === 'rules') {
       const inlineRules = interaction.options.getString('rules')?.trim();
       if (isStaff && interaction.guild && inlineRules) {
-        const pubRes = await this.publishRulesToChannel(interaction.guild, inlineRules, interaction.user.username);
+        const pubRes = await this.publishRulesToChannel(interaction.guild, inlineRules, interaction.user.username, currentConfig);
         if (pubRes.success) {
           const confirmEmbed = new EmbedBuilder()
-            .setTitle('✅ Tournament Rules Published!')
+            .setTitle(`${EMOJI.done} Tournament Rules Published!`)
             .setColor(0x57F287)
-            .setDescription(`Your custom tournament rules & format have been posted in <#${pubRes.channelId}>!`)
+            .setDescription(`Your custom tournament rules & format have been posted in <#${pubRes.channelId}>!\n${EMOJI.dividerBar}`)
             .setFooter({ text: `Published by @${interaction.user.username} • FFA-Manager` })
             .setTimestamp();
           return interaction.editReply({ embeds: [confirmEmbed] });
@@ -5540,17 +7012,18 @@ class DiscordBotManager {
       }
 
       const embed = new EmbedBuilder()
-        .setTitle(`📜 ${activeTitle} — Official Tournament Rulebook`)
+        .setTitle(`${EMOJI.golden} ${activeTitle} — Official Tournament Rulebook`)
         .setColor(0x5865F2)
         .setDescription(
-          currentConfig.customRules ||
-          '*No custom tournament rules have been published yet. Tournament staff can use `/rules` to enter and publish the rules to `#📋┃rules-format`.*'
+          `${EMOJI.dividerBar}\n` +
+          (currentConfig.customRules ||
+            `*No custom tournament rules have been published yet. Tournament staff can use \`/rules\` to enter and publish the rules to \`#${currentConfig.rulesChannel || 'tournament-rules'}\`.*`)
         )
         .setFooter({ text: 'FFA-Manager' })
         .setTimestamp();
       return interaction.editReply({
         embeds: [embed],
-        components: isStaff ? [this.createRulesButtonRow()] : []
+        components: isStaff ? [this.createRulesButtonRow(currentConfig.id)] : []
       });
     }
 
@@ -5558,9 +7031,9 @@ class DiscordBotManager {
       const msg = interaction.options.getString('message', true);
       const ping = interaction.options.getBoolean('ping_everyone') ?? true;
       const embed = new EmbedBuilder()
-        .setTitle(`📢 Official Tournament Announcement — ${activeTitle}`)
+        .setTitle(`${EMOJI.giveaway} Official Tournament Announcement — ${activeTitle}`)
         .setColor(0x5865F2)
-        .setDescription(msg)
+        .setDescription(`${EMOJI.dividerBar}\n${msg}`)
         .setFooter({ text: `Announced by @${interaction.user.username} • FFA | Glacier Cup Manager™` })
         .setTimestamp();
       this.logEvent('info', `Published announcement via /announce by @${interaction.user.username}`, interaction.guild?.name);
@@ -5570,17 +7043,17 @@ class DiscordBotManager {
     if (commandName === 'swap-slots') {
       const s1 = interaction.options.getInteger('slot1', true);
       const s2 = interaction.options.getInteger('slot2', true);
-      const res = await this.swapSlots(s1, s2, interaction.guild || undefined);
+      const res = await this.swapSlots(s1, s2, interaction.guild || undefined, currentConfig);
       if (!res.success) {
         return interaction.editReply(`❌ ${res.error}`);
       }
       const embed = new EmbedBuilder()
-        .setTitle('🔄 Slots Swapped Successfully')
+        .setTitle(`${EMOJI.done} Slots Swapped Successfully`)
         .setColor(0x57F287)
-        .setDescription(`Swapped **Slot #${s1}** (${res.group1}) and **Slot #${s2}** (${res.group2}). \`#slot-list\` has been updated!`)
+        .setDescription(`Swapped **Slot #${s1}** (${res.group1}) and **Slot #${s2}** (${res.group2}). \`#slot-list\` has been updated!\n${EMOJI.dividerBar}`)
         .addFields(
-          { name: `Slot #${s1} (${res.group1})`, value: res.team2 ? `**${res.team2.teamName}**` : '*Open Slot*', inline: true },
-          { name: `Slot #${s2} (${res.group2})`, value: res.team1 ? `**${res.team1.teamName}**` : '*Open Slot*', inline: true }
+          { name: `${EMOJI.golden} Slot #${s1} (${res.group1})`, value: res.team2 ? `**${res.team2.teamName}**` : '*Open Slot*', inline: true },
+          { name: `${EMOJI.golden} Slot #${s2} (${res.group2})`, value: res.team1 ? `**${res.team1.teamName}**` : '*Open Slot*', inline: true }
         )
         .setTimestamp();
       return interaction.editReply({ embeds: [embed] });
@@ -5588,42 +7061,47 @@ class DiscordBotManager {
 
     if (commandName === 'export') {
       const format = (interaction.options.getString('format') || 'markdown').toLowerCase() === 'csv' ? 'csv' : 'markdown';
-      const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
-      const output = this.generateRosterExport(format, true);
+      const teams = this.getTeamsForTournament(currentConfig);
+      const output = this.generateRosterExport(format, true, currentConfig);
       const safeOutput = output.length > 3800 ? output.slice(0, 3800) + '\n...truncated' : output;
 
       const embed = new EmbedBuilder()
-        .setTitle(`📤 Exported Tournament Roster (${teams.length} Teams)`)
+        .setTitle(`${EMOJI.golden} Exported Tournament Roster (${teams.length} Teams)`)
         .setColor(0x5865F2)
-        .setDescription(`\`\`\`${format === 'csv' ? 'csv' : 'text'}\n${safeOutput}\n\`\`\``)
+        .setDescription(`${EMOJI.dividerBar}\n\`\`\`${format === 'csv' ? 'csv' : 'text'}\n${safeOutput}\n\`\`\``)
         .setFooter({ text: 'Consistent with live roster • Ready for casters & production sheets' })
         .setTimestamp();
       return interaction.editReply({ embeds: [embed] });
     }
 
     if (commandName === 'slots') {
-      const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+      const teams = this.getTeamsForTournament(currentConfig);
       const confirmed = teams.filter(t => !t.isWaitlist);
       const waitlist = teams.filter(t => t.isWaitlist);
       const groupedChunks = this.formatGroupedSlotListChunks(confirmed, currentConfig);
       const embed = new EmbedBuilder()
-        .setTitle(`📊 ${activeTitle} — Live Slot List`)
+        .setTitle(`${EMOJI.golden} ${activeTitle} — Live Slot List`)
         .setColor(0x5865F2)
-        .setDescription(groupedChunks[0])
+        .setDescription(`${EMOJI.dividerBar}\n${groupedChunks[0]}`)
         .addFields(
-          { name: 'Confirmed Slots', value: `\`${confirmed.length} / ${currentConfig.totalSlots}\``, inline: true },
-          { name: 'Teams Per Group', value: `\`${currentConfig.teamsPerGroup || currentConfig.totalSlots || 20} Teams/Group\``, inline: true },
-          { name: 'Status', value: currentConfig.status === 'open' ? '🟢 `OPEN`' : currentConfig.status === 'paused' ? '⏸️ `PAUSED`' : '🔴 `LOCKED`', inline: true }
+          { name: `${EMOJI.done} Confirmed Slots`, value: `\`${confirmed.length} / ${currentConfig.totalSlots}\``, inline: true },
+          { name: `${EMOJI.sword} Teams Per Group`, value: `\`${currentConfig.teamsPerGroup || currentConfig.totalSlots || 20} Teams/Group\``, inline: true },
+          { name: `${EMOJI.giveaway} Status`, value: currentConfig.status === 'open' ? `${EMOJI.done} \`OPEN\`` : `${EMOJI.alert} \`LOCKED\``, inline: true }
         )
         .setTimestamp();
       if (waitlist.length > 0) {
         embed.addFields({
-          name: `⏳ Waiting List (${waitlist.length}/${currentConfig.waitlistSlots})`,
-          value: waitlist.map(w => `\`WL #${w.slotNumber}\` **${w.teamName}** — <@${w.captain.id}>`).join('\n').slice(0, 1020),
+          name: `${EMOJI.alert} Waiting List (${waitlist.length}/${currentConfig.waitlistSlots})`,
+          value: waitlist.map(w => `${EMOJI.sword} \`WL #${w.slotNumber}\` **${w.teamName}** — <@${w.captain.id}>`).join('\n').slice(0, 1020),
           inline: false
         });
       }
       return interaction.editReply({ embeds: [embed] });
+    }
+
+    if (commandName === 'active-tournament') {
+      const activeEmbed = this.buildActiveTournamentEmbed(interaction.guild, interaction.channelId);
+      return interaction.editReply({ embeds: [activeEmbed] });
     }
 
     if (commandName === 'setup_registration_panel') {
@@ -5631,16 +7109,12 @@ class DiscordBotManager {
         return interaction.editReply('❌ This command can only be used inside a Discord server.');
       }
       const panelPayload = this.createRegistrationPanelPayload(currentConfig);
-      const regCh = interaction.guild.channels.cache.find(
-        c =>
-          c.isTextBased() &&
-          (c.name === currentConfig.regChannel || c.name === '📝┃registration' || c.name === 'registration')
-      ) as TextChannel | undefined;
+      const regCh = this.resolveRegistrationChannel(interaction.guild, currentConfig);
 
       if (regCh && regCh.id !== interaction.channelId) {
         await regCh.send(panelPayload);
         return interaction.editReply({
-          content: `✅ Posted the **Registration Panel** in <#${regCh.id}>!`,
+          content: `${EMOJI.done} Posted the **Registration Panel** in <#${regCh.id}>!`,
           ...panelPayload
         });
       }
@@ -5650,23 +7124,23 @@ class DiscordBotManager {
 
     if (commandName === 'help') {
       const helpEmbed = new EmbedBuilder()
-        .setTitle('🤖 FFA | Glacier Cup Manager™ — Full Command Suite')
+        .setTitle(`${EMOJI.admin} FFA | Glacier Cup Manager™ — Full Command Suite`)
         .setColor(0x5865F2)
-        .setDescription('Official FFA | Glacier Cup Manager™ Tagcheck Tournament Bot for Discord.')
+        .setDescription(`${EMOJI.golden} Official FFA | Glacier Cup Manager™ Tagcheck Tournament Bot for Discord.\n${EMOJI.dividerBar}`)
         .addFields(
           {
-            name: '🏆 Tournament Setup & Channels',
-            value: '`/setup [slots] [tags] [groups] [title]` *(up to 500 slots, `groups` = teams/group)*\n`/setup_registration_panel`\n`/create tournament`\n`/start-registration` • `/pause-registration [reason]` • `/stop-registration [reason]`\n`/delete slot <slot>` • `/delete tournament`',
+            name: `${EMOJI.golden} Tournament Setup & Channels`,
+            value: '`/setup [slots] [tags] [groups] [title]` *(up to 500 slots, `groups` = teams/group; starts registration immediately)*\n`/active-tournament` *(Check if any tournament is currently active in the server)*\n`/setup_registration_panel`\n`/create tournament`\n`/stop-registration [reason]`\n`/delete slot <slot>` • `/delete tournament`',
             inline: false
           },
           {
-            name: '🔑 Lobby & Registration Control',
-            value: '`/start-registration` • `/pause-registration [reason]` • `/stop-registration [reason]`\n`/idpass <room_id> <password> [map] [match_time]`\n`/swap-slots <slot1> <slot2>`\n`/announce <message>`',
+            name: `${EMOJI.giveaway} Lobby & Registration Control`,
+            value: '`/stop-registration [reason]`\n`/idpass <room_id> <password> [map] [match_time]`\n`/swap-slots <slot1> <slot2>`\n`/announce <message>`',
             inline: false
           },
           {
-            name: '🛡️ Verification, Roster & Standings',
-            value: '`/tagcheck <@user>`\n`/team-info <query>`\n`/blacklist add|remove|list`\n`/standings [group]`\n`/rules` • `/export` • `/slots`',
+            name: `${EMOJI.sword} Verification, Roster & Standings`,
+            value: '`/my-team` *(Captain self-service: Edit Roster or Cancel My Slot)*\n`/tagcheck <@user>`\n`/team-info <query>`\n`/blacklist add|remove|list`\n`/standings [group]`\n`/rules` • `/export` • `/slots`',
             inline: false
           }
         )
@@ -5680,7 +7154,8 @@ class DiscordBotManager {
   public async deleteSlot(
     slotNumber: number,
     guild?: Guild,
-    options?: { isWaitlist?: boolean; teamId?: string }
+    options?: { isWaitlist?: boolean; teamId?: string; tournamentId?: string; tournamentConfig?: any },
+    targetConfig?: any
   ): Promise<{
     success: boolean;
     deletedTeam?: any;
@@ -5689,45 +7164,70 @@ class DiscordBotManager {
     error?: string;
   }> {
     return this.withOperationLock(async () => {
-      const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
-      const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+      const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+      const allTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
       const syncWarnings: string[] = [];
 
-      let targetIdx = -1;
-      if (options?.teamId) {
-        targetIdx = teams.findIndex(t => t.id === options.teamId);
-      }
-      if (targetIdx === -1 && options?.isWaitlist === true) {
-        targetIdx = teams.findIndex(t => t.slotNumber === slotNumber && t.isWaitlist);
-      }
-      if (targetIdx === -1 && options?.isWaitlist === false) {
-        targetIdx = teams.findIndex(t => t.slotNumber === slotNumber && !t.isWaitlist);
-      }
-      if (targetIdx === -1) {
-        targetIdx = teams.findIndex(t => t.slotNumber === slotNumber && !t.isWaitlist);
-        if (targetIdx === -1) {
-          targetIdx = teams.findIndex(t => t.slotNumber === slotNumber && t.isWaitlist);
-        }
+      let resolvedTourneyId = options?.tournamentId || options?.tournamentConfig?.id || targetConfig?.id;
+      if (!resolvedTourneyId && options?.teamId) {
+        const foundById = allTeams.find(t => t.id === options.teamId);
+        if (foundById?.tournamentId) resolvedTourneyId = foundById.tournamentId;
       }
 
-      if (targetIdx === -1) {
+      const config =
+        targetConfig ||
+        options?.tournamentConfig ||
+        this.resolveTournamentContext(guild, undefined, resolvedTourneyId) ||
+        rootConfig;
+
+      const tourneyTeams = this.getTeamsForTournament(config);
+
+      let targetTeam: any = null;
+      if (options?.teamId) {
+        targetTeam = tourneyTeams.find(t => t.id === options.teamId) || allTeams.find(t => t.id === options.teamId);
+      }
+      if (!targetTeam && options?.isWaitlist === true) {
+        targetTeam = tourneyTeams.find(t => t.slotNumber === slotNumber && t.isWaitlist);
+      }
+      if (!targetTeam && options?.isWaitlist === false) {
+        targetTeam = tourneyTeams.find(t => t.slotNumber === slotNumber && !t.isWaitlist);
+      }
+      if (!targetTeam) {
+        targetTeam =
+          tourneyTeams.find(t => t.slotNumber === slotNumber && !t.isWaitlist) ||
+          tourneyTeams.find(t => t.slotNumber === slotNumber && t.isWaitlist);
+      }
+
+      if (!targetTeam) {
         return { success: false, error: `No registered team found in Slot #${slotNumber}.` };
       }
 
-      const targetTeam = teams[targetIdx];
+      const masterIdx = allTeams.findIndex(t => t.id === targetTeam.id);
+      if (masterIdx === -1) {
+        return { success: false, error: `No registered team found in Slot #${slotNumber}.` };
+      }
+
+      const resolveManagedTourneyRoles = (g: Guild) => {
+        const verifiedRoleName = config?.verifiedRoleName || 'Verified Team';
+        const slotRoleName = config?.roleName || 'Confirmed Slot';
+        const verifiedRole =
+          (config?.verifiedRoleId ? g.roles.cache.get(config.verifiedRoleId) : undefined) ||
+          g.roles.cache.find(r => r.name.toLowerCase() === verifiedRoleName.toLowerCase());
+        const slotRole =
+          (config?.slotRoleId ? g.roles.cache.get(config.slotRoleId) : undefined) ||
+          g.roles.cache.find(r => r.name.toLowerCase() === slotRoleName.toLowerCase());
+        return [verifiedRole, slotRole].filter(Boolean);
+      };
 
       if (targetTeam.isWaitlist) {
-        const deletedWl = teams.splice(targetIdx, 1)[0];
+        const deletedWl = allTeams.splice(masterIdx, 1)[0];
+        const remainingTourneyTeams = this.getTeamsForTournament(config);
         let wlCount = 1;
-        teams.forEach(t => {
+        remainingTourneyTeams.forEach(t => {
           if (t.isWaitlist) t.slotNumber = wlCount++;
         });
         if (guild) {
-          const verifiedRoleName = config?.verifiedRoleName || 'Verified Team';
-          const slotRoleName = config?.roleName || 'Confirmed Slot';
-          const verifiedRole = guild.roles.cache.find(r => r.name.toLowerCase() === verifiedRoleName.toLowerCase());
-          const slotRole = guild.roles.cache.find(r => r.name.toLowerCase() === slotRoleName.toLowerCase());
-          const managedRoles = [verifiedRole, slotRole].filter(Boolean);
+          const managedRoles = resolveManagedTourneyRoles(guild);
           if (managedRoles.length > 0) {
             for (const uid of this.getTeamMemberIds(deletedWl)) {
               if (!/^\d{15,20}$/.test(uid)) continue;
@@ -5752,18 +7252,19 @@ class DiscordBotManager {
         return { success: true, deletedTeam: deletedWl, syncWarnings };
       }
 
-      const deletedTeam = teams.splice(targetIdx, 1)[0];
+      const deletedTeam = allTeams.splice(masterIdx, 1)[0];
+      const remainingTourneyTeams = this.getTeamsForTournament(config);
 
-      const firstWlIdx = teams.findIndex(t => t.isWaitlist);
+      const firstWlTeam = remainingTourneyTeams.find(t => t.isWaitlist);
       let promotedTeam: any = null;
-      if (firstWlIdx !== -1) {
-        teams[firstWlIdx].isWaitlist = false;
-        promotedTeam = teams[firstWlIdx];
+      if (firstWlTeam) {
+        firstWlTeam.isWaitlist = false;
+        promotedTeam = firstWlTeam;
       }
 
       let confirmedSlot = 1;
       let waitlistSlot = 1;
-      teams.forEach(t => {
+      remainingTourneyTeams.forEach(t => {
         if (!t.isWaitlist) {
           t.slotNumber = confirmedSlot++;
           t.group = this.calculateGroupForSlot(t.slotNumber, config);
@@ -5773,14 +7274,10 @@ class DiscordBotManager {
         }
       });
 
-      teams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
+      allTeams.sort((a, b) => (a.isWaitlist === b.isWaitlist ? a.slotNumber - b.slotNumber : a.isWaitlist ? 1 : -1));
 
       if (guild) {
-        const verifiedRoleName = config?.verifiedRoleName || 'Verified Team';
-        const slotRoleName = config?.roleName || 'Confirmed Slot';
-        const verifiedRole = guild.roles.cache.find(r => r.name.toLowerCase() === verifiedRoleName.toLowerCase());
-        const slotRole = guild.roles.cache.find(r => r.name.toLowerCase() === slotRoleName.toLowerCase());
-        const managedRoles = [verifiedRole, slotRole].filter(Boolean);
+        const managedRoles = resolveManagedTourneyRoles(guild);
 
         if (managedRoles.length > 0) {
           for (const uid of this.getTeamMemberIds(deletedTeam)) {
@@ -5830,7 +7327,7 @@ class DiscordBotManager {
     });
   }
 
-  public async getTournamentGuildAssets(guild: Guild | undefined, teamsOverride?: any[]) {
+  public async getTournamentGuildAssets(guild: Guild | undefined, teamsOverride?: any[], targetConfig?: any) {
     if (!guild) {
       return {
         categories: [] as CategoryChannel[],
@@ -5840,40 +7337,63 @@ class DiscordBotManager {
       };
     }
 
-    // Refresh live channels, roles, and bot member from Discord API
     await guild.channels.fetch().catch(() => {});
     await guild.roles.fetch().catch(() => {});
     const botMember = guild.members.me || (await guild.members.fetchMe().catch(() => null));
 
-    const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
-    const teams = teamsOverride || (this.getRegisteredTeams ? this.getRegisteredTeams() : []);
+    const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+    const config = targetConfig || this.resolveTournamentContext(guild) || rootConfig;
+    const teams = teamsOverride || this.getTeamsForTournament(config);
 
     const botHighestRolePos = botMember?.roles?.highest?.position ?? 0;
     const isBotAdmin = botMember?.permissions.has(PermissionsBitField.Flags.Administrator) ?? false;
 
-    // Standard tournament channel names
-    const standardChannelNames = new Set(
+    // Collect IDs belonging to OTHER tournaments in this guild so we NEVER touch them
+    const otherTournamentCategoryIds = new Set<string>();
+    const otherTournamentChannelIds = new Set<string>();
+    const otherTournamentRoleIds = new Set<string>();
+    if (rootConfig?.tournaments) {
+      for (const tCfg of Object.values(rootConfig.tournaments) as any[]) {
+        if (!tCfg || (config?.id && tCfg.id === config.id)) continue;
+        if (tCfg.categoryId) otherTournamentCategoryIds.add(tCfg.categoryId);
+        if (tCfg.rulesChannelId) otherTournamentChannelIds.add(tCfg.rulesChannelId);
+        if (tCfg.regChannelId) otherTournamentChannelIds.add(tCfg.regChannelId);
+        if (tCfg.slotListChannelId) otherTournamentChannelIds.add(tCfg.slotListChannelId);
+        if (tCfg.idpChannelId) otherTournamentChannelIds.add(tCfg.idpChannelId);
+        if (tCfg.regDetailsChannelId) otherTournamentChannelIds.add(tCfg.regDetailsChannelId);
+        if (tCfg.verifiedRoleId) otherTournamentRoleIds.add(tCfg.verifiedRoleId);
+        if (tCfg.slotRoleId) otherTournamentRoleIds.add(tCfg.slotRoleId);
+      }
+    }
+    const allTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+    const targetTeamIds = new Set(teams.map((t: any) => t.id));
+    for (const t of allTeams) {
+      if (!targetTeamIds.has(t.id)) {
+        if (t.teamCategoryId) otherTournamentCategoryIds.add(t.teamCategoryId);
+        if (t.teamVoiceChannelId) otherTournamentChannelIds.add(t.teamVoiceChannelId);
+        if (t.teamRoleId) otherTournamentRoleIds.add(t.teamRoleId);
+      }
+    }
+
+    const gMap = config?.id === rootConfig?.id ? config?.guildChannels?.[guild.id] : undefined;
+    const trackedTextChannelIds = new Set(
       [
-        '📋┃rules-format',
-        'rules-format',
-        '📝┃registration',
-        'registration',
-        '📊┃slot-list',
-        'slot-list',
-        '🔑┃id-pass',
-        'id-pass',
-        '🔒┃registration-details',
-        '📋┃registration-details',
-        'registration-details',
-        config?.regChannel?.toLowerCase(),
-        config?.slotListChannel?.toLowerCase(),
-        config?.idpChannel?.toLowerCase(),
-        config?.regDetailsChannel?.toLowerCase(),
-        config?.rulesChannel?.toLowerCase()
-      ].filter(Boolean).map(n => n!.toLowerCase().replace(/^#/, ''))
+        config?.rulesChannelId,
+        config?.regChannelId,
+        config?.slotListChannelId,
+        config?.idpChannelId,
+        config?.regDetailsChannelId,
+        gMap?.rulesChannelId,
+        gMap?.regChannelId,
+        gMap?.slotListChannelId,
+        gMap?.idpChannelId,
+        gMap?.regDetailsChannelId
+      ].filter(Boolean)
+    );
+    const trackedCategoryIds = new Set(
+      [config?.categoryId, gMap?.categoryId].filter(Boolean)
     );
 
-    // Track known identifiers from registered teams
     const teamCategoryIds = new Set<string>();
     const teamVoiceIds = new Set<string>();
     const teamRoleIds = new Set<string>();
@@ -5883,140 +7403,84 @@ class DiscordBotManager {
       if (t.teamCategoryId) teamCategoryIds.add(t.teamCategoryId);
       if (t.teamVoiceChannelId) teamVoiceIds.add(t.teamVoiceChannelId);
       if (t.teamRoleId) teamRoleIds.add(t.teamRoleId);
-      if (t.teamName) {
-        const clean = t.teamName.trim().toLowerCase();
-        teamNames.add(clean);
-        teamNames.add(clean.replace(/^🔊\s*/, ''));
-      }
-      if (t.teamCategoryName) {
-        const clean = t.teamCategoryName.trim().toLowerCase();
-        teamNames.add(clean);
-      }
-      if (t.teamRoleName) {
-        const clean = t.teamRoleName.trim().toLowerCase();
-        teamNames.add(clean);
-      }
-      if (t.teamVoiceChannelName) {
-        const clean = t.teamVoiceChannelName.trim().toLowerCase();
-        teamNames.add(clean);
-        teamNames.add(clean.replace(/^🔊\s*/, ''));
+      if (!t.teamCategoryId && !t.teamVoiceChannelId && !t.teamRoleId) {
+        if (t.teamName) {
+          const clean = t.teamName.trim().toLowerCase();
+          teamNames.add(clean);
+          teamNames.add(clean.replace(/^🔊\s*/, ''));
+        }
+        if (t.teamCategoryName) {
+          teamNames.add(t.teamCategoryName.trim().toLowerCase());
+        }
+        if (t.teamRoleName) {
+          teamNames.add(t.teamRoleName.trim().toLowerCase());
+        }
+        if (t.teamVoiceChannelName) {
+          const clean = t.teamVoiceChannelName.trim().toLowerCase();
+          teamNames.add(clean);
+          teamNames.add(clean.replace(/^🔊\s*/, ''));
+        }
       }
     }
 
     const categoriesToDelete = new Map<string, CategoryChannel>();
     const voiceChannelsToDelete = new Map<string, any>();
     const cfgCatName = (config?.categoryName || '').trim().toLowerCase();
-    const cfgTitle = (config?.title || '').trim().toLowerCase();
 
-    // 1. Identify Tournament Category & Team Categories
+    // 1. Identify Target Tournament Category & Target Tournament Team Categories
     for (const [, ch] of guild.channels.cache) {
       if (ch.type === ChannelType.GuildCategory) {
         const cat = ch as CategoryChannel;
-        const nameLower = cat.name.trim().toLowerCase();
+        if (otherTournamentCategoryIds.has(cat.id)) continue;
 
-        const isConfigCat = cfgCatName.length > 0 && (nameLower === cfgCatName || nameLower.includes(cfgCatName));
-        const isTitleCat = cfgTitle.length > 0 && (
-          nameLower.includes(cfgTitle) ||
-          nameLower === `🏆 ┃ ${cfgTitle}` ||
-          nameLower === `🏆 ┃ ${cfgTitle.toUpperCase()}`.toLowerCase()
-        );
-        const hasTrophyPrefix = cat.name.startsWith('🏆');
-        const hasTournamentKeyword = nameLower.includes('tournament') || nameLower.includes('scrim') || nameLower.includes('glacier');
+        const nameLower = cat.name.trim().toLowerCase();
+        const isTrackedCatId = trackedCategoryIds.has(cat.id);
+        const isConfigCat = trackedCategoryIds.size === 0 && cfgCatName.length > 0 && nameLower === cfgCatName;
         const isTeamCatId = teamCategoryIds.has(cat.id);
         const isTeamCatName = teamNames.has(nameLower);
 
-        // Check if any child of this category is a tournament channel
-        const hasTournamentChild = guild.channels.cache.some(
-          c => c.parentId === cat.id && standardChannelNames.has(c.name.toLowerCase().replace(/^#/, ''))
+        const hasTrackedTournamentChild = guild.channels.cache.some(
+          c => c.parentId === cat.id && trackedTextChannelIds.has(c.id)
         );
 
-        // Check if category has a child voice channel with matching name (exact team workspace pattern created by provisionTeamWorkspace)
-        const hasMatchingChildVoice = guild.channels.cache.some(
-          c => c.parentId === cat.id && c.type === ChannelType.GuildVoice && (
-            c.name.trim().toLowerCase() === nameLower ||
-            c.name.trim().toLowerCase() === `🔊 ${nameLower}` ||
-            c.name.trim().toLowerCase().replace(/^🔊\s*/, '') === nameLower
-          )
-        );
-
-        // Check if this category has private team voice channels inside
         const hasPrivateTeamVoice = guild.channels.cache.some(
-          c => c.parentId === cat.id && c.type === ChannelType.GuildVoice && (
-            teamVoiceIds.has(c.id) ||
-            teamNames.has(c.name.trim().toLowerCase()) ||
-            teamNames.has(c.name.trim().toLowerCase().replace(/^🔊\s*/, '')) ||
-            c.name.includes('🔊') ||
-            c.permissionOverwrites?.cache?.some(
-              ow => ow.id === guild.roles.everyone.id && (
-                ow.deny.has(PermissionsBitField.Flags.ViewChannel) ||
-                ow.deny.has(PermissionsBitField.Flags.Connect)
-              )
-            )
-          )
+          c =>
+            c.parentId === cat.id &&
+            c.type === ChannelType.GuildVoice &&
+            !otherTournamentChannelIds.has(c.id) &&
+            (teamVoiceIds.has(c.id) ||
+              teamNames.has(c.name.trim().toLowerCase()) ||
+              teamNames.has(c.name.trim().toLowerCase().replace(/^🔊\s*/, '')))
         );
-
-        // Check if category itself denies @everyone ViewChannel or Connect (team category pattern)
-        const catDeniesEveryone = cat.permissionOverwrites?.cache?.some(
-          ow => ow.id === guild.roles.everyone.id && (
-            ow.deny.has(PermissionsBitField.Flags.ViewChannel) ||
-            ow.deny.has(PermissionsBitField.Flags.Connect)
-          )
-        );
-        const catHasVoice = guild.channels.cache.some(c => c.parentId === cat.id && c.type === ChannelType.GuildVoice);
 
         if (
+          isTrackedCatId ||
           isConfigCat ||
-          isTitleCat ||
-          hasTrophyPrefix ||
-          hasTournamentKeyword ||
           isTeamCatId ||
           isTeamCatName ||
-          hasTournamentChild ||
-          hasMatchingChildVoice ||
-          hasPrivateTeamVoice ||
-          (catDeniesEveryone && catHasVoice)
+          hasTrackedTournamentChild ||
+          hasPrivateTeamVoice
         ) {
           categoriesToDelete.set(cat.id, cat);
         }
       }
     }
 
-    // 2. Identify Voice Channels (Team VCs & tournament VCs)
+    // 2. Identify Voice Channels belonging to this tournament's teams or categories
     for (const [, ch] of guild.channels.cache) {
       if (ch.type === ChannelType.GuildVoice) {
+        if (otherTournamentChannelIds.has(ch.id)) continue;
+        if (ch.parentId && otherTournamentCategoryIds.has(ch.parentId)) continue;
+
         const nameLower = ch.name.trim().toLowerCase();
         const cleanName = nameLower.replace(/^🔊\s*/, '');
         const isTeamVoiceId = teamVoiceIds.has(ch.id);
         const isInsideTournamentOrTeamCat = ch.parentId ? categoriesToDelete.has(ch.parentId) : false;
         const matchesTeamName = teamNames.has(nameLower) || teamNames.has(cleanName);
-        const matchesSlotPattern = (/\[slot\s*\d+\].*/i).test(ch.name) || (/^slot\s*\d+/i).test(ch.name);
 
-        // Also check if channel denies @everyone ViewChannel/Connect (standard team VC pattern)
-        const deniesEveryone = ch.permissionOverwrites?.cache?.some(
-          ow => ow.id === guild.roles.everyone.id && (
-            ow.deny.has(PermissionsBitField.Flags.ViewChannel) ||
-            ow.deny.has(PermissionsBitField.Flags.Connect)
-          )
-        );
-
-        // Check if channel name matches its parent category
-        const parentCat = ch.parentId ? (guild.channels.cache.get(ch.parentId) as CategoryChannel | undefined) : undefined;
-        const matchesParentCatName = parentCat && (
-          nameLower === parentCat.name.trim().toLowerCase() ||
-          cleanName === parentCat.name.trim().toLowerCase()
-        );
-
-        if (
-          isTeamVoiceId ||
-          isInsideTournamentOrTeamCat ||
-          matchesTeamName ||
-          matchesParentCatName ||
-          matchesSlotPattern ||
-          (deniesEveryone && (ch.name.includes('🔊') || matchesParentCatName || Boolean(ch.parentId)))
-        ) {
+        if (isTeamVoiceId || isInsideTournamentOrTeamCat || matchesTeamName) {
           voiceChannelsToDelete.set(ch.id, ch);
-          // If this voice channel is in a category not yet added, add its category as a team category
-          if (ch.parentId && !categoriesToDelete.has(ch.parentId)) {
+          if (ch.parentId && !categoriesToDelete.has(ch.parentId) && !otherTournamentCategoryIds.has(ch.parentId)) {
             const parent = guild.channels.cache.get(ch.parentId) as CategoryChannel | undefined;
             if (parent && parent.type === ChannelType.GuildCategory) {
               categoriesToDelete.set(parent.id, parent);
@@ -6026,30 +7490,35 @@ class DiscordBotManager {
       }
     }
 
-    // 2b. Secondary pass: Any voice channel whose parent category is in categoriesToDelete
     for (const [, ch] of guild.channels.cache) {
-      if (ch.type === ChannelType.GuildVoice && ch.parentId && categoriesToDelete.has(ch.parentId)) {
+      if (
+        ch.type === ChannelType.GuildVoice &&
+        ch.parentId &&
+        categoriesToDelete.has(ch.parentId) &&
+        !otherTournamentChannelIds.has(ch.id)
+      ) {
         voiceChannelsToDelete.set(ch.id, ch);
       }
     }
 
-    // 3. Identify Text Channels
+    // 3. Identify Text Channels belonging strictly to this tournament
     const textChannelsToDelete = new Map<string, TextChannel>();
     for (const [, ch] of guild.channels.cache) {
       if (ch.isTextBased() && ch.type === ChannelType.GuildText) {
         const textCh = ch as TextChannel;
-        const nameLower = textCh.name.trim().toLowerCase();
+        if (otherTournamentChannelIds.has(textCh.id)) continue;
+        if (textCh.parentId && otherTournamentCategoryIds.has(textCh.parentId)) continue;
 
-        const isStandard = standardChannelNames.has(nameLower);
+        const isTrackedId = trackedTextChannelIds.has(textCh.id);
         const isInsideTournamentCat = textCh.parentId ? categoriesToDelete.has(textCh.parentId) : false;
 
-        if (isStandard || isInsideTournamentCat) {
+        if (isTrackedId || isInsideTournamentCat) {
           textChannelsToDelete.set(textCh.id, textCh);
         }
       }
     }
 
-    // 4. Identify Roles (Team Roles + Tournament Participant Roles)
+    // 4. Identify Roles belonging strictly to this tournament
     const rolesToDelete = new Map<string, any>();
     const protectedRoleNames = new Set([
       '@everyone',
@@ -6060,12 +7529,11 @@ class DiscordBotManager {
     const verifiedRoleName = (config?.verifiedRoleName || 'Verified Team').trim().toLowerCase();
     const slotRoleName = (config?.roleName || 'Confirmed Slot').trim().toLowerCase();
 
-    // Dynamically discover roles granted on team voice channels / categories
     const dynamicallyDiscoveredRoleIds = new Set<string>();
     for (const vc of voiceChannelsToDelete.values()) {
       if (vc.permissionOverwrites?.cache) {
         for (const [owId, ow] of vc.permissionOverwrites.cache) {
-          if (ow.type === 0 && owId !== guild.roles.everyone.id) { // Role overwrite
+          if (ow.type === 0 && owId !== guild.roles.everyone.id && !otherTournamentRoleIds.has(owId)) {
             dynamicallyDiscoveredRoleIds.add(owId);
           }
         }
@@ -6074,47 +7542,35 @@ class DiscordBotManager {
     for (const cat of categoriesToDelete.values()) {
       if (cat.permissionOverwrites?.cache) {
         for (const [owId, ow] of cat.permissionOverwrites.cache) {
-          if (ow.type === 0 && owId !== guild.roles.everyone.id) { // Role overwrite
+          if (ow.type === 0 && owId !== guild.roles.everyone.id && !otherTournamentRoleIds.has(owId)) {
             dynamicallyDiscoveredRoleIds.add(owId);
           }
         }
       }
     }
 
-    // Also collect category and voice channel names to match roles (since team roles are named identically to the team)
-    const targetAssetNames = new Set<string>();
-    for (const cat of categoriesToDelete.values()) {
-      const catLower = cat.name.trim().toLowerCase();
-      if (!catLower.includes('glacier') && !catLower.includes('tournament') && !catLower.includes('scrim') && !cat.name.startsWith('🏆')) {
-        targetAssetNames.add(catLower);
-      }
-    }
-    for (const vc of voiceChannelsToDelete.values()) {
-      const vcLower = vc.name.trim().toLowerCase().replace(/^🔊\s*/, '');
-      targetAssetNames.add(vcLower);
-    }
-
     for (const [, r] of guild.roles.cache) {
       const rNameLower = r.name.trim().toLowerCase();
 
-      // Skip protected roles: @everyone, staff manager role, Discord managed/integration roles
-      if (protectedRoleNames.has(rNameLower) || r.managed) {
+      if (protectedRoleNames.has(rNameLower) || r.managed || otherTournamentRoleIds.has(r.id)) {
         continue;
       }
 
-      // Role hierarchy check: bot cannot delete roles higher or equal to its own top role
       if (!isBotAdmin && r.position >= botHighestRolePos) {
         continue;
       }
 
-      const isVerifiedRole = rNameLower === verifiedRoleName || rNameLower === 'verified team';
-      const isSlotRole = rNameLower === slotRoleName || rNameLower === 'confirmed slot';
+      const isTrackedVerifiedRole = config?.verifiedRoleId
+        ? r.id === config.verifiedRoleId
+        : (otherTournamentRoleIds.size === 0 && (rNameLower === verifiedRoleName || rNameLower === 'verified team'));
+      const isTrackedSlotRole = config?.slotRoleId
+        ? r.id === config.slotRoleId
+        : (otherTournamentRoleIds.size === 0 && (rNameLower === slotRoleName || rNameLower === 'confirmed slot'));
       const isTeamRoleId = teamRoleIds.has(r.id);
       const isTeamName = teamNames.has(rNameLower);
       const isOverwrittenRole = dynamicallyDiscoveredRoleIds.has(r.id);
-      const matchesAssetName = targetAssetNames.has(rNameLower);
 
-      if (isVerifiedRole || isSlotRole || isTeamRoleId || isTeamName || isOverwrittenRole || matchesAssetName) {
+      if (isTrackedVerifiedRole || isTrackedSlotRole || isTeamRoleId || isTeamName || isOverwrittenRole) {
         rolesToDelete.set(r.id, r);
       }
     }
@@ -6129,7 +7585,8 @@ class DiscordBotManager {
 
   public async previewDeleteTournament(
     guild?: Guild,
-    deleteChannels: boolean = true
+    deleteChannels: boolean = true,
+    targetConfig?: any
   ): Promise<{
     title: string;
     confirmedCount: number;
@@ -6140,8 +7597,8 @@ class DiscordBotManager {
     rolesToDelete: string[];
     channelsToDelete: string[];
   }> {
-    const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
-    const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+    const config = targetConfig || this.resolveTournamentContext(guild) || (this.getTournamentConfig ? this.getTournamentConfig() : null);
+    const teams = this.getTeamsForTournament(config);
     const confirmedCount = teams.filter(t => !t.isWaitlist).length;
     const waitlistCount = teams.filter(t => t.isWaitlist).length;
 
@@ -6152,7 +7609,7 @@ class DiscordBotManager {
     const channelsToDelete: string[] = [];
 
     if (guild && deleteChannels) {
-      const assets = await this.getTournamentGuildAssets(guild, teams);
+      const assets = await this.getTournamentGuildAssets(guild, teams, config);
 
       for (const cat of assets.categories) {
         const label = `📁 Category: ${cat.name}`;
@@ -6191,7 +7648,8 @@ class DiscordBotManager {
 
   public async deleteTournament(
     guild?: Guild,
-    deleteChannels: boolean = true
+    deleteChannels: boolean = true,
+    targetConfig?: any
   ): Promise<{
     success: boolean;
     deletedChannels: string[];
@@ -6203,7 +7661,8 @@ class DiscordBotManager {
     error?: string;
   }> {
     return this.withOperationLock(async () => {
-      const config = this.getTournamentConfig ? this.getTournamentConfig() : null;
+      const rootConfig = this.getTournamentConfig ? this.getTournamentConfig() : null;
+      const config = targetConfig || this.resolveTournamentContext(guild) || rootConfig;
       const deletedChannels: string[] = [];
       const deletedCategories: string[] = [];
       const deletedVoiceChannels: string[] = [];
@@ -6215,23 +7674,19 @@ class DiscordBotManager {
       }
       this.cleanupTimers.clear();
 
-      const teams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
-      const teamsToClean = [...teams];
+      const allTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
+      const teamsToClean = [...this.getTeamsForTournament(config)];
       const clearedTeamsCount = teamsToClean.length;
-
-      // Note: do NOT empty teams yet, so asset resolution can access full team metadata!
 
       if (config) {
         config.status = 'closed';
-        config.categoryName = '';
         config.explicitlyStoppedOrPaused = true;
       }
 
       if (guild && deleteChannels) {
-        // Gather all guild assets using teamsToClean metadata before clearing
-        const assets = await this.getTournamentGuildAssets(guild, teamsToClean);
+        const assets = await this.getTournamentGuildAssets(guild, teamsToClean, config);
 
-        // 1. Delete all voice channels first (team VCs & tournament VCs)
+        // 1. Delete all voice channels first
         for (const vc of assets.voiceChannels) {
           const vcName = vc.name;
           try {
@@ -6243,9 +7698,11 @@ class DiscordBotManager {
           }
         }
 
-        // 2. Delete all text channels (#registration, #slot-list, #id-pass, #rules-format, #registration-details)
+        // 2. Delete all text channels for this tournament
         for (const ch of assets.textChannels) {
           const chName = ch.name;
+          this.slotListMessageIds.delete(ch.id);
+          this.regDetailsMessageIds.delete(ch.id);
           try {
             await ch.delete('FFA-Manager /delete tournament — clean tournament text channel');
             deletedTextChannels.push(`#${chName}`);
@@ -6255,7 +7712,7 @@ class DiscordBotManager {
           }
         }
 
-        // 3. Delete any remaining child channels inside target categories before deleting categories
+        // 3. Delete remaining child channels inside target categories and then the categories themselves
         for (const cat of assets.categories) {
           const remainingChildren = guild.channels.cache.filter(c => c.parentId === cat.id);
           for (const [, child] of remainingChildren) {
@@ -6265,7 +7722,6 @@ class DiscordBotManager {
             }
           }
 
-          // 4. Delete the category itself (Tournament category & Team categories)
           const catName = cat.name;
           try {
             await cat.delete('FFA-Manager /delete tournament — clean tournament category');
@@ -6276,7 +7732,7 @@ class DiscordBotManager {
           }
         }
 
-        // 5. Delete all team roles and tournament participant roles (@Verified Team, @Confirmed Slot)
+        // 4. Delete all team roles and tournament participant roles for this tournament
         for (const role of assets.roles) {
           const roleName = role.name;
           try {
@@ -6287,7 +7743,7 @@ class DiscordBotManager {
           }
         }
 
-        // 6. Secondary fallback pass over individual registered team metadata in case of desynced references
+        // 5. Secondary fallback pass over individual registered team metadata
         for (const t of teamsToClean) {
           try {
             const fallbackCleaned = await this.cleanupTeamWorkspace(guild, t).catch(() => []);
@@ -6304,18 +7760,60 @@ class DiscordBotManager {
         }
       }
 
-      // Now clear in-memory rosters and cache IDs
-      teams.length = 0;
-      this.slotListMessageIds.clear();
-      this.regDetailsMessageIds.clear();
+      // Remove only the deleted tournament's teams from master array
+      const cleanIds = new Set(teamsToClean.map(t => t.id));
+      for (let i = allTeams.length - 1; i >= 0; i--) {
+        if (cleanIds.has(allTeams[i].id)) {
+          allTeams.splice(i, 1);
+        }
+      }
 
-      if (this.onTournamentDeleted) {
-        this.onTournamentDeleted();
+      // Remove tournament from registry and promote next available tournament if any
+      if (rootConfig) {
+        if (config?.id && rootConfig.tournaments && rootConfig.tournaments[config.id]) {
+          delete rootConfig.tournaments[config.id];
+        }
+        const remainingTourneys = rootConfig.tournaments
+          ? (Object.values(rootConfig.tournaments) as any[]).sort((a, b) =>
+              String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+            )
+          : [];
+
+        if (remainingTourneys.length > 0) {
+          this.syncTournamentToRootConfig(remainingTourneys[0], true);
+          if (this.onConfigUpdated) {
+            this.onConfigUpdated();
+          }
+        } else {
+          rootConfig.id = '';
+          rootConfig.totalSlots = 0;
+          rootConfig.teamsPerGroup = 0;
+          rootConfig.groupsCount = 0;
+          rootConfig.status = 'closed';
+          rootConfig.explicitlyStoppedOrPaused = true;
+          rootConfig.categoryName = '';
+          rootConfig.categoryId = '';
+          rootConfig.rulesChannelId = '';
+          rootConfig.regChannelId = '';
+          rootConfig.slotListChannelId = '';
+          rootConfig.idpChannelId = '';
+          rootConfig.regDetailsChannelId = '';
+          rootConfig.verifiedRoleId = '';
+          rootConfig.slotRoleId = '';
+          if (guild && rootConfig.guildChannels) {
+            delete rootConfig.guildChannels[guild.id];
+          } else {
+            rootConfig.guildChannels = {};
+          }
+          if (this.onTournamentDeleted) {
+            this.onTournamentDeleted();
+          }
+        }
       }
 
       this.logEvent(
         'warn',
-        `Tournament deleted and all assets removed! (Categories: ${deletedCategories.length}, Voice: ${deletedVoiceChannels.length}, Text: ${deletedTextChannels.length}, Roles: ${deletedRoles.length}, Teams cleared: ${clearedTeamsCount})`,
+        `Tournament "${config?.title || 'Tournament'}" deleted and its assets removed! (Categories: ${deletedCategories.length}, Voice: ${deletedVoiceChannels.length}, Text: ${deletedTextChannels.length}, Roles: ${deletedRoles.length}, Teams cleared: ${clearedTeamsCount})`,
         guild?.name
       );
 
@@ -6348,6 +7846,7 @@ class DiscordBotManager {
     }
   ): Promise<{
     success: boolean;
+    tournamentId?: string;
     created: string[];
     warnings?: string[];
     rolledBack?: string[];
@@ -6376,9 +7875,7 @@ class DiscordBotManager {
       return { success: false, created: [], error: msg };
     }
 
-    const previousConfigSnapshot = { ...config };
-    const existingTeams = this.getRegisteredTeams ? this.getRegisteredTeams() : [];
-    const previousTeamsSnapshot = [...existingTeams];
+    const tournamentId = 'tourney-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
 
     const title = options.title?.trim() || config.title || 'Tournament Scrims';
     const slots = Math.max(2, Math.min(500, options.slots || 20));
@@ -6391,9 +7888,18 @@ class DiscordBotManager {
     const teamsPerGroup = Math.max(1, Math.min(slots, rawTeamsPerGroup));
     const groupsCount = Math.max(1, Math.ceil(slots / teamsPerGroup));
     const managerRoleName = options.managerRoleName?.trim() || config.managerRoleName?.trim() || 'FFA Bot Manager';
-    const verifiedRoleName = options.verifiedRoleName?.trim() || 'Verified Team';
-    const slotRoleName = 'Confirmed Slot';
-    const categoryName = options.categoryName || `🏆 ┃ ${title.toUpperCase()}`;
+    const baseVerifiedRoleName = options.verifiedRoleName?.trim() || 'Verified Team';
+    const baseSlotRoleName = 'Confirmed Slot';
+    const existingGuildTournaments = this.getGuildTournaments(guild);
+    const hasExistingTournamentInGuild = existingGuildTournaments.length > 0;
+    const verifiedRoleName = hasExistingTournamentInGuild
+      ? `${baseVerifiedRoleName} (${title})`.slice(0, 95)
+      : baseVerifiedRoleName;
+    const slotRoleName = hasExistingTournamentInGuild
+      ? `${baseSlotRoleName} (${title})`.slice(0, 95)
+      : baseSlotRoleName;
+    const cleanOptCategory = options.categoryName ? options.categoryName.replace(/^🏆\s*┃?\s*/i, '').trim() : '';
+    const categoryName = cleanOptCategory || title.toUpperCase();
 
     const created: string[] = [];
     const warnings: string[] = [];
@@ -6407,8 +7913,8 @@ class DiscordBotManager {
     }
 
     let managerRole = guild.roles.cache.find(r => r.name.trim().toLowerCase() === managerRoleName.toLowerCase());
-    let verifiedRole = guild.roles.cache.find(r => r.name.toLowerCase() === verifiedRoleName.toLowerCase());
-    let slotRole = guild.roles.cache.find(r => r.name.toLowerCase() === slotRoleName.toLowerCase());
+    let verifiedRole: any = undefined;
+    let slotRole: any = undefined;
 
     if (hasManageRoles) {
       try {
@@ -6438,30 +7944,24 @@ class DiscordBotManager {
           }
         }
 
-        if (!verifiedRole) {
-          verifiedRole = await guild.roles.create({
-            name: verifiedRoleName,
-            color: 0x00E676,
-            hoist: true,
-            mentionable: true,
-            reason: `FFA-Manager Verified Team Role for ${title}`
-          });
-          newlyCreatedRoles.push(verifiedRole);
-          created.push(`Role: @${verifiedRoleName} (Unlocks #id-pass)`);
-        } else {
-          created.push(`Role: @${verifiedRoleName} (Existing)`);
-        }
+        verifiedRole = await guild.roles.create({
+          name: verifiedRoleName,
+          color: 0x00E676,
+          hoist: true,
+          mentionable: true,
+          reason: `FFA-Manager Verified Team Role for ${title} (${tournamentId})`
+        });
+        newlyCreatedRoles.push(verifiedRole);
+        created.push(`Role: @${verifiedRole.name}`);
 
-        if (!slotRole) {
-          slotRole = await guild.roles.create({
-            name: slotRoleName,
-            color: 0x5865F2,
-            mentionable: true,
-            reason: `FFA-Manager Confirmed Slot Role for ${title}`
-          });
-          newlyCreatedRoles.push(slotRole);
-          created.push(`Role: @${slotRoleName}`);
-        }
+        slotRole = await guild.roles.create({
+          name: slotRoleName,
+          color: 0x5865F2,
+          mentionable: true,
+          reason: `FFA-Manager Confirmed Slot Role for ${title} (${tournamentId})`
+        });
+        newlyCreatedRoles.push(slotRole);
+        created.push(`Role: @${slotRole.name}`);
       } catch (err: any) {
         warnings.push(`Role creation notice: ${err.message}`);
         console.log(`[DiscordBot] Role creation notice: ${err.message}`);
@@ -6469,236 +7969,177 @@ class DiscordBotManager {
     }
 
     try {
-      let category = guild.channels.cache.find(
-        c => c.type === ChannelType.GuildCategory && c.name.toLowerCase() === categoryName.toLowerCase()
-      ) as CategoryChannel | undefined;
-
-      if (!category) {
-        category = await guild.channels.create({
-          name: categoryName,
-          type: ChannelType.GuildCategory
-        });
-        newlyCreatedChannels.push(category);
-        created.push(`Category: ${categoryName}`);
-      }
+      const category = await guild.channels.create({
+        name: categoryName,
+        type: ChannelType.GuildCategory
+      });
+      newlyCreatedChannels.push(category);
+      created.push(`Category: ${category.name}`);
 
       const parentId = category.id;
 
-      const rulesChannelName = '📋┃rules-format';
-      let rulesCh = guild.channels.cache.find(
-        c => c.name === rulesChannelName && c.parentId === parentId
-      ) as TextChannel | undefined;
-
-      if (!rulesCh) {
-        const rulesOverwrites: any[] = [
-          {
-            id: guild.roles.everyone.id,
-            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ReadMessageHistory],
-            deny: [PermissionsBitField.Flags.SendMessages]
-          }
-        ];
-        if (managerRole) {
-          rulesOverwrites.push({
-            id: managerRole.id,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.ManageMessages,
-              PermissionsBitField.Flags.ReadMessageHistory
-            ]
-          });
+      const rulesChannelName = 'tournament-rules';
+      const rulesOverwrites: any[] = [
+        {
+          id: guild.roles.everyone.id,
+          allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ReadMessageHistory],
+          deny: [PermissionsBitField.Flags.SendMessages]
         }
-        rulesCh = await guild.channels.create({
-          name: rulesChannelName,
-          type: ChannelType.GuildText,
-          parent: parentId,
-          topic: `Official tournament rules, format and scoring for ${title}`,
-          permissionOverwrites: rulesOverwrites
+      ];
+      if (managerRole) {
+        rulesOverwrites.push({
+          id: managerRole.id,
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ManageMessages,
+            PermissionsBitField.Flags.ReadMessageHistory
+          ]
         });
-        newlyCreatedChannels.push(rulesCh);
-        created.push(`Channel: #${rulesChannelName}`);
       }
+      const rulesCh = await guild.channels.create({
+        name: rulesChannelName,
+        type: ChannelType.GuildText,
+        parent: parentId,
+        topic: `Official tournament rules, format and scoring for ${title}`,
+        permissionOverwrites: rulesOverwrites
+      });
+      newlyCreatedChannels.push(rulesCh);
+      created.push(`Channel: #${rulesCh.name}`);
 
-      const regChannelName = '📝┃registration';
-      let regCh = guild.channels.cache.find(
-        c => c.name === regChannelName && c.parentId === parentId
-      ) as TextChannel | undefined;
-
-      if (!regCh) {
-        const regOverwrites: any[] = [
-          {
-            id: guild.roles.everyone.id,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.ReadMessageHistory
-            ]
-          }
-        ];
-        if (managerRole) {
-          regOverwrites.push({
-            id: managerRole.id,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.ManageMessages,
-              PermissionsBitField.Flags.ReadMessageHistory
-            ]
-          });
+      const regChannelName = 'tournament-registration';
+      const regOverwrites: any[] = [
+        {
+          id: guild.roles.everyone.id,
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ReadMessageHistory
+          ]
         }
-        regCh = await guild.channels.create({
-          name: regChannelName,
-          type: ChannelType.GuildText,
-          parent: parentId,
-          topic: `Registration channel for ${title} (OPEN). Click Register Your Team or tag ${tags} players to register.`,
-          permissionOverwrites: regOverwrites
+      ];
+      if (managerRole) {
+        regOverwrites.push({
+          id: managerRole.id,
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ManageMessages,
+            PermissionsBitField.Flags.ReadMessageHistory
+          ]
         });
-        newlyCreatedChannels.push(regCh);
-        created.push(`Channel: #${regChannelName} (OPEN — Registration Panel Active)`);
-      } else {
-        await regCh.permissionOverwrites.edit(
-          guild.roles.everyone.id,
-          {
-            ViewChannel: true,
-            SendMessages: true,
-            ReadMessageHistory: true
-          },
-          { reason: 'Tournament setup — registration open' }
-        ).catch((e: any) => {
-          warnings.push(`Could not unlock #${regChannelName}: ${e.message}`);
-        });
-        if (managerRole) {
-          await regCh.permissionOverwrites.edit(
-            managerRole.id,
-            {
-              ViewChannel: true,
-              SendMessages: true,
-              ManageMessages: true,
-              ReadMessageHistory: true
-            }
-          ).catch(() => {});
-        }
-        created.push(`Channel: #${regChannelName} (OPEN — Registration Panel Active)`);
       }
+      const regCh = await guild.channels.create({
+        name: regChannelName,
+        type: ChannelType.GuildText,
+        parent: parentId,
+        topic: `Registration channel for ${title} (OPEN). Click Register Your Team or tag ${tags} players to register.`,
+        permissionOverwrites: regOverwrites
+      });
+      newlyCreatedChannels.push(regCh);
+      created.push(`Channel: #${regCh.name} (OPEN — Registration Panel Active)`);
 
       const panelPayload = this.createRegistrationPanelPayload({
         ...config,
+        id: tournamentId,
         title,
         totalSlots: slots,
         requiredTags: tags
       });
 
       await regCh.send(panelPayload).catch((e: any) => {
-        warnings.push(`Could not post registration panel in #${regChannelName}: ${e.message}`);
+        warnings.push(`Could not post registration panel in #${regCh.name}: ${e.message}`);
       });
 
-      const slotListChannelName = '📊┃slot-list';
-      let slotCh = guild.channels.cache.find(
-        c => c.name === slotListChannelName && c.parentId === parentId
-      ) as TextChannel | undefined;
-
-      if (!slotCh) {
-        const slotOverwrites: any[] = [
-          {
-            id: guild.roles.everyone.id,
-            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ReadMessageHistory],
-            deny: [PermissionsBitField.Flags.SendMessages]
-          }
-        ];
-        if (managerRole) {
-          slotOverwrites.push({
-            id: managerRole.id,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.ManageMessages,
-              PermissionsBitField.Flags.ReadMessageHistory
-            ]
-          });
+      const slotListChannelName = 'slot-list';
+      const slotOverwrites: any[] = [
+        {
+          id: guild.roles.everyone.id,
+          allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ReadMessageHistory],
+          deny: [PermissionsBitField.Flags.SendMessages]
         }
-        slotCh = await guild.channels.create({
-          name: slotListChannelName,
-          type: ChannelType.GuildText,
-          parent: parentId,
-          topic: `Live confirmed slots & waitlist for ${title}`,
-          permissionOverwrites: slotOverwrites
+      ];
+      if (managerRole) {
+        slotOverwrites.push({
+          id: managerRole.id,
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ManageMessages,
+            PermissionsBitField.Flags.ReadMessageHistory
+          ]
         });
-        newlyCreatedChannels.push(slotCh);
-        created.push(`Channel: #${slotListChannelName}`);
       }
+      const slotCh = await guild.channels.create({
+        name: slotListChannelName,
+        type: ChannelType.GuildText,
+        parent: parentId,
+        topic: `Live confirmed slots & waitlist for ${title}`,
+        permissionOverwrites: slotOverwrites
+      });
+      newlyCreatedChannels.push(slotCh);
+      created.push(`Channel: #${slotCh.name}`);
 
-      const idpChannelName = '🔑┃id-pass';
-      let idpCh = guild.channels.cache.find(
-        c => c.name === idpChannelName && c.parentId === parentId
-      ) as TextChannel | undefined;
-
-      if (!idpCh) {
-        const idpOverwrites: any[] = [
-          {
-            id: guild.roles.everyone.id,
-            deny: [PermissionsBitField.Flags.ViewChannel]
-          }
-        ];
-
-        if (verifiedRole) {
-          idpOverwrites.push({
-            id: verifiedRole.id,
-            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ReadMessageHistory],
-            deny: [PermissionsBitField.Flags.SendMessages]
-          });
+      const idpChannelName = 'tournament-idp';
+      const idpOverwrites: any[] = [
+        {
+          id: guild.roles.everyone.id,
+          allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ReadMessageHistory],
+          deny: [PermissionsBitField.Flags.SendMessages]
         }
+      ];
 
-        if (managerRole) {
-          idpOverwrites.push({
-            id: managerRole.id,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.ManageMessages,
-              PermissionsBitField.Flags.ReadMessageHistory
-            ]
-          });
-        }
-
-        if (botMember) {
-          idpOverwrites.push({
-            id: botMember.id,
-            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.EmbedLinks]
-          });
-        }
-
-        idpCh = await guild.channels.create({
-          name: idpChannelName,
-          type: ChannelType.GuildText,
-          parent: parentId,
-          topic: `Private room credentials for ${title} — Visible only to @${verifiedRoleName}`,
-          permissionOverwrites: idpOverwrites
-        });
-        newlyCreatedChannels.push(idpCh);
-        created.push(`Channel: #${idpChannelName} (Restricted to @${verifiedRoleName})`);
-
-        const idpEmbed = new EmbedBuilder()
-          .setTitle(`🔑 Private Match Room Credentials — ${title}`)
-          .setColor(0xFEE75C)
-          .setDescription(
-            `Welcome to the private room channel!\n\n` +
-            `• Only players with the **@${verifiedRoleName}** role have permission to see this channel.\n` +
-            `• Room ID & Password will be published here 15 minutes before match start.\n` +
-            `• Ensure your team joins only your allotted slot number in the lobby.`
-          )
-          .setFooter({ text: 'FFA | Glacier Cup Manager™ Room Management' })
-          .setTimestamp();
-
-        await idpCh.send({ embeds: [idpEmbed] }).catch((e: any) => {
-          warnings.push(`Could not post welcome message in #${idpChannelName}: ${e.message}`);
+      if (managerRole) {
+        idpOverwrites.push({
+          id: managerRole.id,
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ManageMessages,
+            PermissionsBitField.Flags.ReadMessageHistory
+          ]
         });
       }
 
-      const regDetailsChannelName = '🔒┃registration-details';
-      let regDetailsCh = guild.channels.cache.find(
-        c => c.name === regDetailsChannelName && c.parentId === parentId
-      ) as TextChannel | undefined;
+      if (botMember) {
+        idpOverwrites.push({
+          id: botMember.id,
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.EmbedLinks,
+            PermissionsBitField.Flags.ReadMessageHistory
+          ]
+        });
+      }
 
+      const idpCh = await guild.channels.create({
+        name: idpChannelName,
+        type: ChannelType.GuildText,
+        parent: parentId,
+        topic: `Match room credentials (Room ID & Password) for ${title}`,
+        permissionOverwrites: idpOverwrites
+      });
+      newlyCreatedChannels.push(idpCh);
+      created.push(`Channel: #${idpCh.name} (Public — Chat Locked)`);
+
+      const idpEmbed = new EmbedBuilder()
+        .setTitle(`${EMOJI.giveaway} Match Room Credentials — ${title}`)
+        .setColor(0xFEE75C)
+        .setDescription(
+          `${EMOJI.golden} Welcome to the official room credentials channel!\n` +
+          `${EMOJI.dividerBar}\n` +
+          `${EMOJI.sword} Room ID & Password will be published here 15 minutes before match start.\n` +
+          `${EMOJI.done} Ensure your team joins only your allotted slot number in the lobby.`
+        )
+        .setFooter({ text: 'FFA | Glacier Cup Manager™ Room Management' })
+        .setTimestamp();
+
+      await idpCh.send({ embeds: [idpEmbed] }).catch((e: any) => {
+        warnings.push(`Could not post welcome message in #${idpCh.name}: ${e.message}`);
+      });
+
+      const regDetailsChannelName = 'registration-details';
       const regDetailsOverwrites: any[] = [
         {
           id: guild.roles.everyone.id,
@@ -6731,56 +8172,76 @@ class DiscordBotManager {
         });
       }
 
-      if (!regDetailsCh) {
-        regDetailsCh = await guild.channels.create({
-          name: regDetailsChannelName,
-          type: ChannelType.GuildText,
-          parent: parentId,
-          topic: `Confidential team registration details (Sequence-wise: Team Name, Region, WhatsApp, Players Tags) — Visible only to @${managerRoleName}`,
-          permissionOverwrites: regDetailsOverwrites
-        });
-        newlyCreatedChannels.push(regDetailsCh);
-        created.push(`Channel: #${regDetailsChannelName} (Hidden — Visible to @${managerRoleName})`);
-      } else {
-        await regDetailsCh.permissionOverwrites.set(regDetailsOverwrites).catch(() => {});
-        created.push(`Channel: #${regDetailsChannelName} (Hidden — Visible to @${managerRoleName})`);
-      }
+      const regDetailsCh = await guild.channels.create({
+        name: regDetailsChannelName,
+        type: ChannelType.GuildText,
+        parent: parentId,
+        topic: `Confidential team registration details (Sequence-wise: Team Name, Region, WhatsApp, Players Tags) — Visible only to @${managerRoleName}`,
+        permissionOverwrites: regDetailsOverwrites
+      });
+      newlyCreatedChannels.push(regDetailsCh);
+      created.push(`Channel: #${regDetailsCh.name} (Hidden — Visible to @${managerRoleName})`);
 
-      existingTeams.length = 0;
-      this.slotListMessageIds.clear();
-      this.regDetailsMessageIds.clear();
+      const format =
+        tags === 4 ? 'Squad' :
+        tags === 3 ? 'Trio' :
+        tags === 2 ? 'Duo' :
+        tags === 1 ? 'Solo' : 'Custom';
 
-      config.title = title;
-      config.totalSlots = slots;
-      config.requiredTags = tags;
-      config.maxTags = tags;
-      config.teamsPerGroup = teamsPerGroup;
-      config.groupsCount = groupsCount;
-      config.categoryName = categoryName;
-      config.managerRoleName = managerRoleName;
-      config.verifiedRoleName = verifiedRoleName;
-      config.roleName = slotRoleName;
-      config.rulesChannel = rulesChannelName;
-      config.regChannel = regChannelName;
-      config.slotListChannel = slotListChannelName;
-      config.idpChannel = idpChannelName;
-      config.regDetailsChannel = regDetailsChannelName;
-      config.status = 'open';
-      config.explicitlyStoppedOrPaused = false;
-      if (tags === 4) config.format = 'Squad';
-      else if (tags === 3) config.format = 'Trio';
-      else if (tags === 2) config.format = 'Duo';
-      else if (tags === 1) config.format = 'Solo';
-      else config.format = 'Custom';
+      const newTourneyConfig: Record<string, any> = {
+        id: tournamentId,
+        guildId: guild.id,
+        createdAt: new Date().toISOString(),
+        title,
+        subtitle: config.subtitle || 'DAILY COMPETITIVE SCRIMS',
+        format,
+        totalSlots: slots,
+        reservedSlots: config.reservedSlots || 0,
+        requiredTags: tags,
+        maxTags: tags,
+        teamsPerGroup,
+        groupsCount,
+        duplicateTagCheck: config.duplicateTagCheck ?? true,
+        autoAssignRole: config.autoAssignRole ?? true,
+        roleName: slotRole?.name || slotRoleName,
+        slotRoleId: slotRole?.id,
+        verifiedRoleName: verifiedRole?.name || verifiedRoleName,
+        verifiedRoleId: verifiedRole?.id,
+        managerRoleName: managerRole?.name || managerRoleName,
+        managerRoleId: managerRole?.id,
+        categoryId: category.id,
+        categoryName: category.name,
+        rulesChannelId: rulesCh.id,
+        rulesChannel: rulesCh.name,
+        regChannelId: regCh.id,
+        regChannel: regCh.name,
+        slotListChannelId: slotCh.id,
+        slotListChannel: slotCh.name,
+        idpChannelId: idpCh.id,
+        idpChannel: idpCh.name,
+        regDetailsChannelId: regDetailsCh.id,
+        regDetailsChannel: regDetailsCh.name,
+        status: 'open',
+        explicitlyStoppedOrPaused: false,
+        prizePool: config.prizePool || '$500 USD',
+        startTime: config.startTime || '20:00 UTC',
+        rulesText: options.rules?.trim() || config.rulesText || '',
+        rulesUpdatedAt: options.rules?.trim() ? new Date().toISOString() : config.rulesUpdatedAt,
+        rulesUpdatedBy: options.createdBy || config.rulesUpdatedBy
+      };
+
+      const registry = this.ensureTournamentsRegistry(config);
+      registry[tournamentId] = newTourneyConfig;
+      this.syncTournamentToRootConfig(newTourneyConfig, true);
 
       if (options.rules && options.rules.trim().length > 0) {
-        const pubRes = await this.publishRulesToChannel(guild, options.rules.trim(), options.createdBy);
+        const pubRes = await this.publishRulesToChannel(guild, options.rules.trim(), options.createdBy, newTourneyConfig);
         if (!pubRes.success && pubRes.error) {
           warnings.push(`Rules publication notice: ${pubRes.error}`);
         }
       }
 
-      const slotListRes = await this.updateSlotListChannel(guild, config);
+      const slotListRes = await this.updateSlotListChannel(guild, newTourneyConfig);
       if (!slotListRes.updated && slotListRes.error) {
         warnings.push(`Initial #slot-list message notice: ${slotListRes.error}`);
       }
@@ -6791,12 +8252,12 @@ class DiscordBotManager {
 
       this.logEvent(
         warnings.length > 0 ? 'warn' : 'success',
-        `Tournament "${title}" setup in "${guild.name}" (${slots} slots, ${tags} tags, ${teamsPerGroup} teams/group [${groupsCount} groups], registration CLOSED): ${created.join(', ')}${warnings.length > 0 ? ` [Warnings: ${warnings.join('; ')}]` : ''}`,
+        `Tournament "${title}" (${tournamentId}) setup in "${guild.name}" (${slots} slots, ${tags} tags, ${teamsPerGroup} teams/group [${groupsCount} groups], registration OPEN): ${created.join(', ')}${warnings.length > 0 ? ` [Warnings: ${warnings.join('; ')}]` : ''}`,
         guild.name
       );
       this.refreshGuilds();
 
-      return { success: true, created, warnings };
+      return { success: true, tournamentId, created, warnings };
     } catch (err: any) {
       const rolledBack: string[] = [];
       for (const ch of newlyCreatedChannels.reverse()) {
@@ -6815,10 +8276,6 @@ class DiscordBotManager {
         } catch {
         }
       }
-
-      Object.assign(config, previousConfigSnapshot);
-      existingTeams.length = 0;
-      existingTeams.push(...previousTeamsSnapshot);
 
       this.logEvent(
         'error',

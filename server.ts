@@ -22,6 +22,7 @@ export type TournamentRegion = 'India' | 'Pakistan' | 'Bangladesh';
 
 interface TeamRegistration {
   id: string;
+  tournamentId?: string;
   slotNumber: number;
   teamName: string;
   captain: PlayerTag;
@@ -44,6 +45,8 @@ interface TeamRegistration {
 
 interface TournamentConfig {
   id: string;
+  guildId?: string;
+  createdAt?: string;
   title: string;
   game: string;
   format: 'Squad' | 'Trio' | 'Duo' | 'Solo' | 'Custom';
@@ -53,9 +56,14 @@ interface TournamentConfig {
   waitlistSlots: number;
   groupsCount?: number;
   teamsPerGroup?: number;
+  categoryId?: string;
   categoryName?: string;
   verifiedRoleName?: string;
+  verifiedRoleId?: string;
   managerRoleName?: string;
+  managerRoleId?: string;
+  slotRoleId?: string;
+  rulesChannelId?: string;
   rulesChannel?: string;
   customRules?: string;
   easyTagEnabled: boolean;
@@ -65,11 +73,27 @@ interface TournamentConfig {
   autoDeleteInvalid: boolean;
   autoDeleteSeconds: number;
   autoCreateTeamVoice?: boolean;
-  status: 'open' | 'closed' | 'paused';
+  status: 'open' | 'closed';
+  regChannelId?: string;
   regChannel: string;
+  slotListChannelId?: string;
   slotListChannel: string;
+  idpChannelId?: string;
   idpChannel: string;
+  regDetailsChannelId?: string;
   regDetailsChannel?: string;
+  guildChannels?: Record<
+    string,
+    {
+      categoryId?: string;
+      rulesChannelId?: string;
+      regChannelId?: string;
+      slotListChannelId?: string;
+      idpChannelId?: string;
+      regDetailsChannelId?: string;
+    }
+  >;
+  tournaments?: Record<string, any>;
   rulesMessage: string;
   roleName: string;
 }
@@ -90,9 +114,10 @@ let config: TournamentConfig & { explicitlyStoppedOrPaused?: boolean } = {
   format: 'Squad',
   requiredTags: 4,
   maxTags: 4,
-  totalSlots: 20,
+  totalSlots: 0,
   waitlistSlots: 5,
   groupsCount: 1,
+  teamsPerGroup: 0,
   categoryName: '',
   easyTagEnabled: true,
   prohibitDuplicateTags: true,
@@ -101,12 +126,13 @@ let config: TournamentConfig & { explicitlyStoppedOrPaused?: boolean } = {
   autoDeleteInvalid: true,
   autoDeleteSeconds: 5,
   autoCreateTeamVoice: true,
-  status: 'open',
-  explicitlyStoppedOrPaused: false,
-  regChannel: 'registration',
+  status: 'closed',
+  explicitlyStoppedOrPaused: true,
+  rulesChannel: 'tournament-rules',
+  regChannel: 'tournament-registration',
   slotListChannel: 'slot-list',
-  idpChannel: 'id-pass',
-  regDetailsChannel: '🔒┃registration-details',
+  idpChannel: 'tournament-idp',
+  regDetailsChannel: 'registration-details',
   rulesMessage: 'Format:\nTeam Name: Glacier Titans\nRegion: India\nWhatsApp: +919876543210\nPlayer 1: @Captain\nPlayer 2: @Player2\nPlayer 3: @Player3\nPlayer 4: @Player4',
   roleName: 'Confirmed Slot',
   verifiedRoleName: 'Verified Team',
@@ -122,7 +148,8 @@ function saveTournamentState() {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    const serialized = JSON.stringify({ config, registeredTeams, lastRoomDispatch }, null, 2);
+    const botData = discordBot.getPersistedBotData();
+    const serialized = JSON.stringify({ config, registeredTeams, lastRoomDispatch, botData }, null, 2);
     const tempFile = `${STATE_FILE}.tmp`;
     fs.writeFileSync(tempFile, serialized, 'utf8');
     fs.renameSync(tempFile, STATE_FILE);
@@ -138,10 +165,20 @@ function loadTournamentState() {
       const parsed = JSON.parse(raw);
       if (parsed && parsed.config) {
         config = { ...config, ...parsed.config };
-        if (!config.totalSlots || config.totalSlots <= 0) {
-          config.totalSlots = 20;
-        }
-        if (!config.explicitlyStoppedOrPaused) {
+        const hasAnyRegisteredTourney = Boolean(
+          (config.tournaments && Object.keys(config.tournaments).length > 0) ||
+            config.id ||
+            config.categoryId ||
+            config.regChannelId
+        );
+        if (!hasAnyRegisteredTourney || typeof config.totalSlots !== 'number' || config.totalSlots <= 0) {
+          config.id = '';
+          config.totalSlots = 0;
+          config.teamsPerGroup = 0;
+          config.groupsCount = 0;
+          config.status = 'closed';
+          config.explicitlyStoppedOrPaused = true;
+        } else if (!config.explicitlyStoppedOrPaused) {
           config.status = 'open';
         }
       }
@@ -150,6 +187,9 @@ function loadTournamentState() {
       }
       if (parsed && parsed.lastRoomDispatch) {
         lastRoomDispatch = parsed.lastRoomDispatch;
+      }
+      if (parsed && parsed.botData) {
+        discordBot.restorePersistedBotData(parsed.botData);
       }
     }
   } catch (err) {
@@ -198,15 +238,8 @@ async function startServer() {
     console.log(`[Tournament] Slot #${slotNumber} deleted via Discord command`);
   };
   discordBot.onTournamentDeleted = () => {
-    registeredTeams = [];
-    lastRoomDispatch = null;
-    config.title = '';
-    config.totalSlots = 0;
-    config.categoryName = '';
-    config.status = 'closed';
-    config.explicitlyStoppedOrPaused = true;
     saveTournamentState();
-    console.log(`[Tournament] Active tournament deleted & roster reset via Discord command`);
+    console.log(`[Tournament] Tournament deleted via Discord command`);
   };
 
   const getConfiguredToken = (): string => {
@@ -233,41 +266,84 @@ async function startServer() {
   }
 
   app.get('/api/config', (_req: Request, res: Response) => {
+    discordBot.reconcileActiveTournaments();
     res.json(config);
   });
 
-  app.post('/api/config', (req: Request, res: Response) => {
+  app.post('/api/config', async (req: Request, res: Response) => {
     const incoming = { ...req.body };
     const isExplicitStatusChange = Boolean(incoming.explicitStatusCommand);
     delete incoming.explicitStatusCommand;
 
     if (!isExplicitStatusChange) {
       delete incoming.status;
-    } else if (incoming.status === 'paused' || incoming.status === 'closed') {
+    } else if (incoming.status === 'closed') {
       config.explicitlyStoppedOrPaused = true;
     } else if (incoming.status === 'open') {
       config.explicitlyStoppedOrPaused = false;
     }
 
     config = { ...config, ...incoming };
+    if (typeof config.totalSlots === 'number') {
+      if (config.totalSlots > 0) {
+        config.totalSlots = Math.max(2, Math.min(500, Math.round(config.totalSlots)));
+      } else {
+        config.totalSlots = 0;
+      }
+    }
+    const activeTeams = discordBot.getTeamsForTournament(config);
+    if (config.totalSlots > 0) {
+      const effectiveTpg =
+        config.teamsPerGroup && config.teamsPerGroup > 0
+          ? Math.max(1, Math.min(config.totalSlots, Math.round(config.teamsPerGroup)))
+          : config.totalSlots;
+      config.teamsPerGroup = effectiveTpg;
+      config.groupsCount = Math.max(1, Math.ceil(config.totalSlots / effectiveTpg));
+      for (const t of activeTeams) {
+        if (!t.isWaitlist) {
+          t.group = discordBot.calculateGroupForSlot(t.slotNumber, config);
+        }
+      }
+    }
     if (typeof config.requiredTags === 'number' && config.requiredTags > 0) {
       config.maxTags = config.requiredTags;
+      if (config.requiredTags === 4) config.format = 'Squad';
+      else if (config.requiredTags === 3) config.format = 'Trio';
+      else if (config.requiredTags === 2) config.format = 'Duo';
+      else if (config.requiredTags === 1) config.format = 'Solo';
+      else config.format = 'Custom';
     }
     if (!config.explicitlyStoppedOrPaused) {
       config.status = 'open';
     }
+    if (config.id && config.tournaments && config.tournaments[config.id]) {
+      Object.assign(config.tournaments[config.id], {
+        title: config.title,
+        format: config.format,
+        totalSlots: config.totalSlots,
+        requiredTags: config.requiredTags,
+        maxTags: config.maxTags,
+        teamsPerGroup: config.teamsPerGroup,
+        groupsCount: config.groupsCount,
+        status: config.status,
+        explicitlyStoppedOrPaused: config.explicitlyStoppedOrPaused
+      });
+    }
     saveTournamentState();
-    res.json({ success: true, config });
+    await discordBot.syncGuildChannels(config).catch(() => {});
+    res.json({ success: true, config, teams: discordBot.getTeamsForTournament(config) });
   });
 
   app.get('/api/teams', (_req: Request, res: Response) => {
+    discordBot.reconcileActiveTournaments();
+    const activeTeams = discordBot.getTeamsForTournament(config);
     res.json({
-      confirmed: registeredTeams.filter(t => !t.isWaitlist),
-      waitlist: registeredTeams.filter(t => t.isWaitlist),
+      confirmed: activeTeams.filter(t => !t.isWaitlist),
+      waitlist: activeTeams.filter(t => t.isWaitlist),
       totalSlots: config.totalSlots,
       waitlistSlots: config.waitlistSlots,
-      remainingSlots: Math.max(0, config.totalSlots - registeredTeams.filter(t => !t.isWaitlist).length),
-      isFull: registeredTeams.filter(t => !t.isWaitlist).length >= config.totalSlots
+      remainingSlots: Math.max(0, config.totalSlots - activeTeams.filter(t => !t.isWaitlist).length),
+      isFull: config.totalSlots > 0 && activeTeams.filter(t => !t.isWaitlist).length >= config.totalSlots
     });
   });
 
@@ -321,6 +397,16 @@ async function startServer() {
     } = req.body;
 
     const result = await discordBot.withOperationLock(async () => {
+      if (!config.totalSlots || config.totalSlots <= 0) {
+        return {
+          status: 400,
+          body: {
+            success: false,
+            code: 'NO_TOURNAMENT_CREATED',
+            error: 'Tournament slot capacity is not set yet! Please set your Total Slots (2–500) in the Team Slots section or run /setup first.'
+          }
+        };
+      }
       if (!config.explicitlyStoppedOrPaused && config.status !== 'open') {
         config.status = 'open';
       }
@@ -400,10 +486,11 @@ async function startServer() {
 
       const client = (discordBot as any).client;
       const guild = client?.guilds?.cache?.first() || null;
+      const activeTeams = discordBot.getTeamsForTournament(config);
 
       const resolvedPlayers: { id: string; username: string; displayName: string; avatar: string; isBot?: boolean }[] = [];
       for (const rawPlayer of rawPlayers) {
-        const resolved = await discordBot.resolveSubmittedPlayer(rawPlayer, guild, registeredTeams);
+        const resolved = await discordBot.resolveSubmittedPlayer(rawPlayer, guild, activeTeams);
         if (!resolved || !resolved.id) {
           return {
             status: 400,
@@ -418,7 +505,7 @@ async function startServer() {
       }
 
       const resolvedCaptain = captain
-        ? (await discordBot.resolveSubmittedPlayer(captain, guild, registeredTeams)) || resolvedPlayers[0]
+        ? (await discordBot.resolveSubmittedPlayer(captain, guild, activeTeams)) || resolvedPlayers[0]
         : resolvedPlayers[0];
 
       const captainId = discordBot.normalizeMemberId(resolvedCaptain?.id || resolvedPlayers[0]?.id);
@@ -428,7 +515,7 @@ async function startServer() {
         captainId,
         players: resolvedPlayers,
         config,
-        existingTeams: registeredTeams
+        existingTeams: activeTeams
       });
 
       if (!validation.valid) {
@@ -448,8 +535,8 @@ async function startServer() {
       discordBot.markMembersInFlight(allMemberIds, true);
 
       try {
-        const currentConfirmed = registeredTeams.filter(t => !t.isWaitlist);
-        const currentWaitlist = registeredTeams.filter(t => t.isWaitlist);
+        const currentConfirmed = activeTeams.filter(t => !t.isWaitlist);
+        const currentWaitlist = activeTeams.filter(t => t.isWaitlist);
         const isWaitlist = currentConfirmed.length >= config.totalSlots;
 
         let slotNumber = 1;
@@ -474,17 +561,18 @@ async function startServer() {
 
         const newTeam: TeamRegistration = {
           id: `team-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          tournamentId: config.id || undefined,
           slotNumber,
           teamName: cleanedName,
           captain: cleanCaptain,
           players: cleanPlayers,
           registeredAt: new Date().toISOString(),
           messageId: messageId || `msg-${Date.now()}`,
-          channelId: channelId || config.regChannel,
+          channelId: channelId || config.regChannelId || config.regChannel,
           isWaitlist,
           group: isWaitlist ? undefined : assignedGroup,
           teamRoleName: cleanedName,
-          teamCategoryName: cleanedName,
+          teamCategoryName: 'Team Voice Lobbies',
           teamVoiceChannelName: cleanedName,
           whatsappNumber1: cleanWa1,
           region: region as TournamentRegion
@@ -499,7 +587,7 @@ async function startServer() {
         }
         await discordBot.syncGuildChannels(config, guild).catch(() => {});
 
-        const newConfirmedCount = registeredTeams.filter(t => !t.isWaitlist).length;
+        const newConfirmedCount = discordBot.getTeamsForTournament(config).filter(t => !t.isWaitlist).length;
 
         return {
           status: 200,
@@ -530,9 +618,13 @@ async function startServer() {
     const client = (discordBot as any).client;
     const guild = guildId ? client?.guilds.cache.get(guildId) : client?.guilds.cache.first();
 
+    const targetTourney =
+      (targetTeam.tournamentId && config.tournaments?.[targetTeam.tournamentId]) || config;
+
     const result = await discordBot.deleteSlot(targetTeam.slotNumber, guild, {
       teamId: targetTeam.id,
-      isWaitlist: targetTeam.isWaitlist
+      isWaitlist: targetTeam.isWaitlist,
+      tournamentConfig: targetTourney
     });
     if (!result.success) {
       return res.status(400).json({ error: result.error || 'Failed to remove team slot' });
@@ -543,7 +635,7 @@ async function startServer() {
       kickedTeam: result.deletedTeam,
       promotedTeam: result.promotedTeam,
       syncWarnings: result.syncWarnings || [],
-      teams: registeredTeams
+      teams: discordBot.getTeamsForTournament(config)
     });
   });
 
@@ -551,14 +643,19 @@ async function startServer() {
     await discordBot.withOperationLock(async () => {
       const client = (discordBot as any).client;
       const guild = client?.guilds?.cache?.first();
+      const activeTeams = discordBot.getTeamsForTournament(config);
       if (guild) {
         const verifiedRoleName = config.verifiedRoleName || 'Verified Team';
         const slotRoleName = config.roleName || 'Confirmed Slot';
-        const verifiedRole = guild.roles.cache.find((r: any) => r.name.toLowerCase() === verifiedRoleName.toLowerCase());
-        const slotRole = guild.roles.cache.find((r: any) => r.name.toLowerCase() === slotRoleName.toLowerCase());
+        const verifiedRole =
+          (config.verifiedRoleId ? guild.roles.cache.get(config.verifiedRoleId) : undefined) ||
+          guild.roles.cache.find((r: any) => r.name.toLowerCase() === verifiedRoleName.toLowerCase());
+        const slotRole =
+          (config.slotRoleId ? guild.roles.cache.get(config.slotRoleId) : undefined) ||
+          guild.roles.cache.find((r: any) => r.name.toLowerCase() === slotRoleName.toLowerCase());
         const managedRoles = [verifiedRole, slotRole].filter(Boolean);
 
-        for (const t of registeredTeams) {
+        for (const t of activeTeams) {
           if (managedRoles.length > 0) {
             for (const uid of discordBot.getTeamMemberIds(t)) {
               if (!/^\d{15,20}$/.test(uid)) continue;
@@ -575,7 +672,12 @@ async function startServer() {
           await discordBot.cleanupTeamWorkspace(guild, t).catch(() => {});
         }
       }
-      registeredTeams.splice(0, registeredTeams.length);
+      const activeIds = new Set(activeTeams.map(t => t.id));
+      for (let i = registeredTeams.length - 1; i >= 0; i--) {
+        if (activeIds.has(registeredTeams[i].id)) {
+          registeredTeams.splice(i, 1);
+        }
+      }
       config.status = 'open';
       saveTournamentState();
       await discordBot.syncGuildChannels(config, guild).catch(() => {});
@@ -686,30 +788,6 @@ async function startServer() {
     });
   });
 
-  app.post('/api/bot/start-registration', async (req: Request, res: Response) => {
-    const { guildId } = req.body || {};
-    const client = (discordBot as any).client;
-    const guild = guildId ? client?.guilds.cache.get(guildId) : undefined;
-    const result = await discordBot.startRegistration(guild, 'Web Dashboard');
-    saveTournamentState();
-    res.json({
-      ...result,
-      config
-    });
-  });
-
-  app.post('/api/bot/pause-registration', async (req: Request, res: Response) => {
-    const { guildId, reason } = req.body || {};
-    const client = (discordBot as any).client;
-    const guild = guildId ? client?.guilds.cache.get(guildId) : undefined;
-    const result = await discordBot.pauseRegistration(guild, reason, 'Web Dashboard');
-    saveTournamentState();
-    res.json({
-      ...result,
-      config
-    });
-  });
-
   app.post('/api/bot/stop-registration', async (req: Request, res: Response) => {
     const { guildId, reason } = req.body || {};
     const client = (discordBot as any).client;
@@ -764,6 +842,40 @@ async function startServer() {
       config,
       teams: registeredTeams
     });
+  });
+
+  app.get('/api/bot/channels', (_req: Request, res: Response) => {
+    try {
+      const channels = discordBot.getAvailableTextChannels();
+      res.json({ success: true, channels });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message, channels: [] });
+    }
+  });
+
+  app.post('/api/bot/send-custom-embed', async (req: Request, res: Response) => {
+    try {
+      const { channelId, guildId, content, embed, tournamentId } = req.body;
+      if (!embed || (!embed.title && !embed.description && (!embed.fields || embed.fields.length === 0))) {
+        return res.status(400).json({ success: false, error: 'Embed must contain at least a title, description, or fields.' });
+      }
+
+      const result = await discordBot.sendCustomEmbed({
+        channelId,
+        guildId,
+        content,
+        embed,
+        tournamentId
+      });
+
+      if (result.success) {
+        saveTournamentState();
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message || 'Server error while sending embed' });
+    }
   });
 
   app.post('/api/teams/swap', async (req: Request, res: Response) => {

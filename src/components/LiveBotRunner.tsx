@@ -15,7 +15,6 @@ import {
   AlertCircle,
   Sparkles,
   Info,
-  Wand2,
   Terminal,
   Activity,
   AlertTriangle,
@@ -54,11 +53,11 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
 
   const [showWizard, setShowWizard] = useState<boolean>(true);
   const [wizardGuildId, setWizardGuildId] = useState<string>('');
-  const [wizardTitle, setWizardTitle] = useState<string>(config.title || '');
-  const [wizardSlots, setWizardSlots] = useState<number>(config.totalSlots > 0 ? config.totalSlots : 20);
-  const [wizardTags, setWizardTags] = useState<number>(config.requiredTags || 4);
-  const [wizardGroups, setWizardGroups] = useState<number>(config.teamsPerGroup || (config.totalSlots > 0 ? config.totalSlots : 20));
-  const [wizardRoleName, setWizardRoleName] = useState<string>(config.verifiedRoleName || 'Verified Team');
+  const [wizardTitle, setWizardTitle] = useState<string>('');
+  const [wizardSlots, setWizardSlots] = useState<string>('');
+  const [wizardTags, setWizardTags] = useState<string>('');
+  const [wizardGroups, setWizardGroups] = useState<string>('');
+  const [wizardRoleName, setWizardRoleName] = useState<string>('');
   const [isSettingUpTourney, setIsSettingUpTourney] = useState<boolean>(false);
   const [wizardResult, setWizardResult] = useState<{
     success: boolean;
@@ -68,20 +67,36 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
     error?: string;
   } | null>(null);
 
-  const applyPreset = (slots: number, tags: number, teamsPerGroup: number, title: string) => {
-    setWizardSlots(slots);
-    setWizardTags(tags);
-    setWizardGroups(teamsPerGroup);
-    setWizardTitle(title);
-  };
-
   const handleRunSetupWizard = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const targetGuildId = wizardGuildId || (botStatus.guilds[0]?.id ?? '');
+    const targetGuildId = wizardGuildId.trim();
     if (!targetGuildId) {
       setFeedback({ type: 'error', message: 'Please select a Discord server to setup' });
       return;
     }
+
+    const parsedSlots = parseInt(wizardSlots, 10);
+    const parsedTags = parseInt(wizardTags, 10);
+    const parsedGroups = parseInt(wizardGroups, 10);
+
+    if (!wizardTitle.trim()) {
+      setFeedback({ type: 'error', message: 'Please enter a tournament or scrim title' });
+      return;
+    }
+    if (isNaN(parsedSlots) || parsedSlots < 2 || parsedSlots > 500) {
+      setFeedback({ type: 'error', message: 'Please enter a valid number of total slots (2–500)' });
+      return;
+    }
+    if (isNaN(parsedTags) || parsedTags < 1 || parsedTags > 6) {
+      setFeedback({ type: 'error', message: 'Please enter a valid number of required tags per team (1–6)' });
+      return;
+    }
+    if (isNaN(parsedGroups) || parsedGroups < 1 || parsedGroups > 500) {
+      setFeedback({ type: 'error', message: 'Please enter a valid number of teams per group (1–500)' });
+      return;
+    }
+
+    const cleanRoleName = wizardRoleName.trim() || 'Verified Team';
 
     setIsSettingUpTourney(true);
     setWizardResult(null);
@@ -92,11 +107,11 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           guildId: targetGuildId,
-          title: wizardTitle,
-          slots: wizardSlots,
-          tags: wizardTags,
-          teamsPerGroup: wizardGroups,
-          verifiedRoleName: wizardRoleName
+          title: wizardTitle.trim(),
+          slots: parsedSlots,
+          tags: parsedTags,
+          teamsPerGroup: parsedGroups,
+          verifiedRoleName: cleanRoleName
         })
       });
 
@@ -110,8 +125,8 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
         setFeedback({
           type: data.warnings?.length ? 'info' : 'success',
           message: data.warnings?.length
-            ? `Tournament "${wizardTitle}" created with ${data.warnings.length} permission notice(s).`
-            : `Tournament "${wizardTitle}" auto-created! Channels & @${wizardRoleName} role are ready.`
+            ? `Tournament "${wizardTitle.trim()}" created with ${data.warnings.length} permission notice(s).`
+            : `Tournament "${wizardTitle.trim()}" auto-created! Channels & @${cleanRoleName} role are ready.`
         });
         if (onUpdateConfig && data.config) {
           onUpdateConfig(data.config);
@@ -257,6 +272,11 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
     const h = Math.floor(m / 60);
     return `${h}h ${m % 60}m`;
   };
+
+  const calculatedGroupsCount =
+    wizardSlots && wizardGroups && parseInt(wizardSlots, 10) > 0 && parseInt(wizardGroups, 10) > 0
+      ? Math.max(1, Math.ceil(parseInt(wizardSlots, 10) / Math.max(1, parseInt(wizardGroups, 10))))
+      : null;
 
   return (
     <div className="space-y-16 w-full animate-fadeIn">
@@ -456,10 +476,10 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
                 </div>
                 <div>
                   <span className="font-display text-base sm:text-lg font-bold text-white block">
-                    Instant Tournament Presets &amp; Parameters
+                    Tournament Setup Parameters
                   </span>
                   <span className="text-xs text-white/45">
-                    Select a competitive template or customize slot and group counts below
+                    Enter your tournament details, slot capacity, and group structure below
                   </span>
                 </div>
               </div>
@@ -475,91 +495,20 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
 
             {showWizard && (
               <form onSubmit={handleRunSetupWizard} className="space-y-7">
-                <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/50 mb-3.5">
-                    Select Format Preset
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-                    <button
-                      type="button"
-                      onClick={() => applyPreset(20, 4, 20, 'Glacier Cup Squads')}
-                      className={`p-4 rounded-2xl text-left cursor-pointer group transition-all border ${
-                        wizardSlots === 20 && wizardGroups === 20
-                          ? 'bg-[#0EA5E9]/[0.09] border-[#38BDF8]/40 shadow-[inset_0_1px_0_rgba(186,230,253,0.12)]'
-                          : 'esports-card-sub'
-                      }`}
-                    >
-                      <div className="font-display text-sm font-bold text-white group-hover:text-[#7DD3FC] transition-colors">
-                        Squad Scrims
-                      </div>
-                      <div className="text-xs font-mono tabular-nums text-white/50 mt-1">
-                        20 Slots · 4 Tags · 20/Grp
-                      </div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => applyPreset(48, 4, 12, 'Championship Series — 4 Groups')}
-                      className={`p-4 rounded-2xl text-left cursor-pointer group transition-all border ${
-                        wizardSlots === 48 && wizardGroups === 12
-                          ? 'bg-[#0EA5E9]/[0.09] border-[#38BDF8]/40 shadow-[inset_0_1px_0_rgba(186,230,253,0.12)]'
-                          : 'esports-card-sub'
-                      }`}
-                    >
-                      <div className="font-display text-sm font-bold text-white group-hover:text-[#7DD3FC] transition-colors">
-                        48-Slot Major
-                      </div>
-                      <div className="text-xs font-mono tabular-nums text-white/50 mt-1">
-                        48 Slots · 4 Tags · 12/Grp
-                      </div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => applyPreset(100, 4, 20, '100-Team Qualifier')}
-                      className={`p-4 rounded-2xl text-left cursor-pointer group transition-all border ${
-                        wizardSlots === 100 && wizardGroups === 20
-                          ? 'bg-[#0EA5E9]/[0.09] border-[#38BDF8]/40 shadow-[inset_0_1px_0_rgba(186,230,253,0.12)]'
-                          : 'esports-card-sub'
-                      }`}
-                    >
-                      <div className="font-display text-sm font-bold text-white group-hover:text-[#7DD3FC] transition-colors">
-                        100-Slot Qualifier
-                      </div>
-                      <div className="text-xs font-mono tabular-nums text-white/50 mt-1">
-                        100 Slots · 4 Tags · 20/Grp
-                      </div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => applyPreset(500, 4, 25, '500-Slot Open Cup')}
-                      className={`p-4 rounded-2xl text-left cursor-pointer group transition-all border ${
-                        wizardSlots === 500 && wizardGroups === 25
-                          ? 'bg-[#0EA5E9]/[0.09] border-[#38BDF8]/40 shadow-[inset_0_1px_0_rgba(186,230,253,0.12)]'
-                          : 'esports-card-sub'
-                      }`}
-                    >
-                      <div className="font-display text-sm font-bold text-white group-hover:text-[#7DD3FC] transition-colors">
-                        500-Slot Open Cup
-                      </div>
-                      <div className="text-xs font-mono tabular-nums text-white/50 mt-1">
-                        500 Slots · 4 Tags · 25/Grp
-                      </div>
-                    </button>
-                  </div>
-                </div>
-
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
                   <div>
                     <label className="block text-xs font-medium text-white/75 mb-2">
                       Target Discord Server
                     </label>
                     <select
-                      value={wizardGuildId || (botStatus.guilds[0]?.id ?? '')}
+                      value={wizardGuildId}
                       onChange={e => setWizardGuildId(e.target.value)}
                       className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-medium cursor-pointer"
+                      required
                     >
+                      <option value="" disabled className="bg-[#090C12] text-white/50">
+                        Select Discord server...
+                      </option>
                       {botStatus.guilds.map(g => (
                         <option key={g.id} value={g.id} className="bg-[#090C12] text-white">
                           {g.name} ({g.memberCount} members)
@@ -576,7 +525,7 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
                       type="text"
                       value={wizardTitle}
                       onChange={e => setWizardTitle(e.target.value)}
-                      placeholder="e.g. Glacier Cup Season 1"
+                      placeholder="Enter tournament or scrim title"
                       className="w-full h-11 px-3.5 rounded-xl esports-input text-xs placeholder-white/35"
                       required
                     />
@@ -586,99 +535,48 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
                     <label className="block text-xs font-medium text-white/75 mb-2">
                       Total Slots (2–500)
                     </label>
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="number"
-                        min="2"
-                        max="500"
-                        value={wizardSlots}
-                        onChange={e => setWizardSlots(Math.max(2, Math.min(500, parseInt(e.target.value, 10) || 20)))}
-                        className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-mono tabular-nums"
-                        required
-                      />
-                      <div className="flex gap-1 shrink-0">
-                        {[20, 48, 100, 500].map(sl => (
-                          <button
-                            key={sl}
-                            type="button"
-                            onClick={() => setWizardSlots(sl)}
-                            className={`h-11 px-2.5 rounded-xl border text-[11px] font-mono tabular-nums transition-all cursor-pointer ${
-                              wizardSlots === sl
-                                ? 'bg-[#0EA5E9]/20 border-[#38BDF8]/50 text-[#7DD3FC] font-semibold'
-                                : 'bg-white/[0.02] border-white/[0.08] text-white/50 hover:text-white hover:border-white/20'
-                            }`}
-                          >
-                            {sl}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                    <input
+                      type="number"
+                      min="2"
+                      max="500"
+                      value={wizardSlots}
+                      onChange={e => setWizardSlots(e.target.value)}
+                      placeholder="Enter total slots (2–500)"
+                      className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-mono tabular-nums placeholder-white/35"
+                      required
+                    />
                   </div>
 
                   <div>
                     <label className="block text-xs font-medium text-white/75 mb-2">
                       Required Tags / Team
                     </label>
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="number"
-                        min="1"
-                        max="6"
-                        value={wizardTags}
-                        onChange={e => setWizardTags(parseInt(e.target.value, 10) || 4)}
-                        className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-mono tabular-nums"
-                        required
-                      />
-                      <div className="flex gap-1 shrink-0">
-                        {[2, 3, 4].map(tg => (
-                          <button
-                            key={tg}
-                            type="button"
-                            onClick={() => setWizardTags(tg)}
-                            className={`h-11 px-3 rounded-xl border text-[11px] font-mono tabular-nums transition-all cursor-pointer ${
-                              wizardTags === tg
-                                ? 'bg-[#0EA5E9]/20 border-[#38BDF8]/50 text-[#7DD3FC] font-semibold'
-                                : 'bg-white/[0.02] border-white/[0.08] text-white/50 hover:text-white hover:border-white/20'
-                            }`}
-                          >
-                            {tg}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                    <input
+                      type="number"
+                      min="1"
+                      max="6"
+                      value={wizardTags}
+                      onChange={e => setWizardTags(e.target.value)}
+                      placeholder="Enter required tags (1–6)"
+                      className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-mono tabular-nums placeholder-white/35"
+                      required
+                    />
                   </div>
 
                   <div>
                     <label className="block text-xs font-medium text-white/75 mb-2">
-                      Teams per Group ({Math.max(1, Math.ceil(wizardSlots / Math.max(1, wizardGroups)))} Group(s))
+                      Teams per Group{calculatedGroupsCount ? ` (${calculatedGroupsCount} Group(s))` : ''}
                     </label>
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="number"
-                        min="1"
-                        max="500"
-                        value={wizardGroups}
-                        onChange={e => setWizardGroups(Math.max(1, Math.min(500, parseInt(e.target.value, 10) || 12)))}
-                        className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-mono tabular-nums"
-                        required
-                      />
-                      <div className="flex gap-1 shrink-0">
-                        {[12, 16, 20, 25].map(tpg => (
-                          <button
-                            key={tpg}
-                            type="button"
-                            onClick={() => setWizardGroups(tpg)}
-                            className={`h-11 px-2.5 rounded-xl border text-[11px] font-mono tabular-nums transition-all cursor-pointer ${
-                              wizardGroups === tpg
-                                ? 'bg-[#0EA5E9]/20 border-[#38BDF8]/50 text-[#7DD3FC] font-semibold'
-                                : 'bg-white/[0.02] border-white/[0.08] text-white/50 hover:text-white hover:border-white/20'
-                            }`}
-                          >
-                            {tpg}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                    <input
+                      type="number"
+                      min="1"
+                      max="500"
+                      value={wizardGroups}
+                      onChange={e => setWizardGroups(e.target.value)}
+                      placeholder="Enter teams per group"
+                      className="w-full h-11 px-3.5 rounded-xl esports-input text-xs font-mono tabular-nums placeholder-white/35"
+                      required
+                    />
                   </div>
 
                   <div className="sm:col-span-2 lg:col-span-3">
@@ -689,7 +587,7 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
                       type="text"
                       value={wizardRoleName}
                       onChange={e => setWizardRoleName(e.target.value)}
-                      placeholder="Verified Team"
+                      placeholder="Enter role name (e.g. Verified Team)"
                       className="w-full h-11 px-3.5 rounded-xl esports-input text-xs placeholder-white/35"
                     />
                   </div>
@@ -700,16 +598,15 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
                     <Terminal className="w-3.5 h-3.5 text-[#7DD3FC] shrink-0" />
                     <span>Discord Command Alternative:</span>
                     <code className="text-[#7DD3FC] font-mono bg-white/[0.03] px-3 py-1 rounded-lg border border-white/[0.08]">
-                      !setup {wizardSlots} {wizardTags} {wizardGroups} {wizardTitle.split(' ')[0]}
+                      !setup {wizardSlots || '<slots>'} {wizardTags || '<tags>'} {wizardGroups || '<groups>'} {wizardTitle.trim() ? wizardTitle.trim().split(' ')[0] : '<title>'}
                     </code>
                   </div>
 
                   <button
                     type="submit"
                     disabled={isSettingUpTourney}
-                    className="btn-glacier-primary h-11 px-6 rounded-xl text-xs font-bold flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                    className="btn-glacier-primary h-11 px-7 rounded-xl font-display text-[13.5px] font-semibold tracking-[0.015em] flex items-center justify-center cursor-pointer disabled:opacity-50 whitespace-nowrap"
                   >
-                    <Wand2 className="w-4 h-4" />
                     <span>{isSettingUpTourney ? 'Generating Channels & Roles...' : 'Auto-Create Category, Channels & Roles'}</span>
                   </button>
                 </div>
@@ -917,9 +814,8 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
                           <button
                             onClick={() => handleAutoSetupGuild(guild.id)}
                             disabled={settingUpGuildId === guild.id}
-                            className="btn-glacier-primary h-10 px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                            className="btn-glacier-primary h-10 px-4 rounded-xl font-display text-[13px] font-semibold tracking-[0.015em] flex items-center justify-center whitespace-nowrap cursor-pointer"
                           >
-                            <Wand2 className="w-3.5 h-3.5" />
                             <span>{settingUpGuildId === guild.id ? 'Creating...' : 'Create #registration'}</span>
                           </button>
                         )}
@@ -1004,11 +900,11 @@ export const LiveBotRunner: React.FC<LiveBotRunnerProps> = ({ config, onRefreshT
 
           <div className="p-6 rounded-2xl esports-card-sub space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-bold text-[#10B981] bg-[#10B981]/10 px-2.5 py-1 rounded-lg border border-[#10B981]/20">/lock &amp; /unlock</span>
+              <span className="font-mono text-xs font-bold text-[#10B981] bg-[#10B981]/10 px-2.5 py-1 rounded-lg border border-[#10B981]/20">/stop-registration</span>
               <span className="text-[11px] text-white/40 font-mono">reason (optional)</span>
             </div>
             <p className="text-xs text-white/55 leading-relaxed">
-              Instantly locks or unlocks tournament registrations in <code className="text-white/85 font-mono">#registration</code> and posts an official status banner.
+              Registration starts automatically on <code className="text-white/85 font-mono">/setup</code> and continues until <code className="text-white/85 font-mono">/stop-registration</code> stops and locks <code className="text-white/85 font-mono">#registration</code>.
             </p>
           </div>
 

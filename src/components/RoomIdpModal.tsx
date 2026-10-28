@@ -18,11 +18,11 @@ export const RoomIdpModal: React.FC<RoomIdpModalProps> = ({
   onDispatch,
   lastDispatch
 }) => {
-  const [roomId, setRoomId] = useState<string>(lastDispatch?.roomId || '8492019');
-  const [roomPass, setRoomPass] = useState<string>(lastDispatch?.roomPass || 'scrims99');
-  const [mapName, setMapName] = useState<string>(lastDispatch?.mapName || 'Main Lobby');
-  const [matchTime, setMatchTime] = useState<string>(lastDispatch?.matchTime || '08:00 PM IST');
-  const [serverType, setServerType] = useState<string>(lastDispatch?.serverType || 'Custom Room #1');
+  const [roomId, setRoomId] = useState<string>('');
+  const [roomPass, setRoomPass] = useState<string>('');
+  const [mapName, setMapName] = useState<string>('');
+  const [matchTime, setMatchTime] = useState<string>('');
+  const [serverType, setServerType] = useState<string>('');
   const [dispatched, setDispatched] = useState<boolean>(false);
 
   if (!isOpen) return null;
